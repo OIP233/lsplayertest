@@ -3448,32 +3448,43 @@ class InlineVoiceInput {
   }
 
   async _transcribe(blob) {
-    // Bestandsextensie afleiden uit mime-type
     const t = blob.type || 'audio/webm';
-    const ext = t.includes('mp4') ? 'm4a'
-              : t.includes('ogg') ? 'ogg'
-              : t.includes('wav') ? 'wav'
-              : 'webm';
-    const file = new File([blob], `recording.${ext}`, { type: t });
-
-    const fd = new FormData();
-    // Stuur onder beide veldnamen voor compatibiliteit met verschillende API-wrappers
-    fd.append('file', file);
-    fd.append('audio', file);
-    if (this.language) fd.append('language', this.language);
-    if (this.prompt)   fd.append('prompt', this.prompt);
-    fd.append('model', 'whisper-1');
-    fd.append('response_format', 'json');
-
     console.log('[OIP voice] POST → ' + this.endpoint +
                 ' · audio: ' + Math.round(blob.size/1024) + ' KB · ' + t +
                 ' · lang: ' + this.language);
 
-    const res = await fetch(this.endpoint, { method: 'POST', body: fd });
+    // Audio naar base64 converteren (jouw Netlify-functie verwacht JSON, geen multipart)
+    const base64 = await InlineVoiceInput._blobToBase64(blob);
+
+    // Probeer eerst JSON-base64 (meest gangbaar voor Netlify Whisper-wrappers).
+    // Verschillende veldnamen tegelijk meesturen voor maximale compatibiliteit.
+    const payload = {
+      audio:    base64,         // pure base64 string (zonder data:-prefix)
+      file:     base64,         // alias
+      data:     base64,         // alias
+      audioBase64: base64,      // alias
+      mimeType: t,
+      mime_type: t,
+      format:   t.includes('mp4') ? 'm4a' : t.includes('ogg') ? 'ogg' : 'webm',
+      language: this.language,
+      prompt:   this.prompt,
+      model:    'whisper-1',
+    };
+
+    let res;
+    try {
+      res = await fetch(this.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } catch (e) {
+      throw new Error('Network error: ' + (e.message || e));
+    }
 
     if (!res.ok) {
       let detail = '';
-      try { detail = (await res.text()).slice(0, 200); } catch (_) {}
+      try { detail = (await res.text()).slice(0, 250); } catch (_) {}
       throw new Error(`HTTP ${res.status} ${res.statusText}${detail ? ' — ' + detail : ''}`);
     }
 
@@ -3488,11 +3499,9 @@ class InlineVoiceInput {
     } else {
       raw = (await res.text()).trim();
       console.log('[OIP voice] API response (text):', raw.slice(0, 300));
-      // Sommige endpoints retourneren plain text, andere stiekem JSON met text/plain content-type
       if (raw.startsWith('{') || raw.startsWith('[')) {
         try {
-          const parsed = JSON.parse(raw);
-          text = InlineVoiceInput._extractText(parsed);
+          text = InlineVoiceInput._extractText(JSON.parse(raw));
         } catch (_) {
           text = raw;
         }
@@ -3507,6 +3516,21 @@ class InlineVoiceInput {
       console.log('[OIP voice] Transcript:', text);
     }
     return text;
+  }
+
+  // Blob → base64 string (zonder "data:audio/...;base64," prefix)
+  static _blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const result = reader.result || '';
+        // Verwijder de "data:...;base64," prefix
+        const idx = result.indexOf(',');
+        resolve(idx >= 0 ? result.slice(idx + 1) : result);
+      };
+      reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
+      reader.readAsDataURL(blob);
+    });
   }
 
   // Recursief zoeken naar een transcript-string in willekeurige JSON-structuur.
