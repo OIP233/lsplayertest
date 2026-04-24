@@ -3675,13 +3675,23 @@ function onPttCancel(e) {
 }
 
 function onPttKeyDown(e) {
-  // Alleen spatiebalk, en niet wanneer gebruiker in textarea/input typt
+  // Alleen spatiebalk, niet bij key-repeat
   if (e.code !== 'Space' || e.repeat) return;
-  const tag = (e.target?.tagName || '').toUpperCase();
-  if (tag === 'TEXTAREA' || tag === 'INPUT') return;
   if (!voiceInput || !voiceReady) return;
   const btn = document.getElementById('ptt-btn');
   if (btn?.disabled) return;
+
+  // Niet activeren als de gebruiker een modifier-toets gebruikt (zoals Ctrl+Space, Alt+Space)
+  if (e.ctrlKey || e.altKey || e.metaKey) return;
+
+  const tag = (e.target?.tagName || '').toUpperCase();
+  if (tag === 'TEXTAREA' || tag === 'INPUT') {
+    // In een tekstveld: spatiebalk-PTT alléén als het veld leeg is.
+    // Zodra de operator iets heeft getypt, gedraagt spatiebalk zich weer normaal (= spatie typen).
+    const val = (e.target.value || '');
+    if (val.length > 0) return;
+  }
+
   e.preventDefault();
   if (!voiceSpaceDown) {
     voiceSpaceDown = true;
@@ -4225,8 +4235,16 @@ function setInput(v) {
   if (inp) inp.disabled = !v;
   if (btn) btn.disabled = !v;
   // PTT-knop alleen aan als voice-module klaar is EN input actief is
-  if (ptt) ptt.disabled = !(v && voiceReady);
-  if (v && inp) inp.focus();
+  if (ptt) {
+    ptt.disabled = !(v && voiceReady);
+    ptt.title = (lang==='en'
+      ? 'Hold to speak (or hold Space when textarea is empty)'
+      : 'Houd vast om te spreken (of houd Spatie ingedrukt als veld leeg is)');
+  }
+  if (v && inp) {
+    inp.focus();
+    autoResizeCentre(inp);  // triggert ook de hint-update
+  }
 }
 
 function handleKeyCentre(e) {
@@ -4239,6 +4257,19 @@ function handleKey(e) { handleKeyCentre(e); }
 function autoResizeCentre(el) {
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+  // Update hint: leeg veld + voice klaar → spatiebalk-tip; anders normale Enter-tip
+  const hint = document.getElementById('input-hint');
+  if (hint) {
+    if (voiceReady && (el.value || '').length === 0) {
+      hint.innerHTML = (lang==='en'
+        ? 'Space = push-to-talk · Enter to send'
+        : 'Spatie = spreken · Enter om te zenden');
+    } else {
+      hint.textContent = (lang==='en'
+        ? 'Enter to send · Shift+Enter new line'
+        : 'Enter om te zenden · Shift+Enter nieuwe regel');
+    }
+  }
 }
 
 function autoResize(el) { autoResizeCentre(el); }
