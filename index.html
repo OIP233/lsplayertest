@@ -769,6 +769,48 @@ html, body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Voice tip — eenmalige melding boven textarea */
+#voice-tip {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--cyan-dim, rgba(0,188,212,0.12));
+  border: 1px solid var(--cyan);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--cyan);
+  line-height: 1.4;
+}
+#voice-tip.active { display: flex; }
+#voice-tip .vt-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 20px;
+  border: 1.5px solid var(--cyan);
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  flex-shrink: 0;
+}
+#voice-tip #vt-text { flex: 1; color: var(--text-bright); }
+#voice-tip #vt-dismiss {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+#voice-tip #vt-dismiss:hover { color: var(--cyan); }
+
 /* Voice status balk (boven de textarea, onder de header) */
 #voice-status {
   display: none;
@@ -1908,6 +1950,11 @@ body.light .msg.sys .msg-bub { color: var(--text-dim); }
         <span id="voice-err-badge" title="">⚠ voice offline</span>
       </div>
       <div id="centre-input-body">
+        <div id="voice-tip" style="display:none">
+          <span class="vt-icon">⎵</span>
+          <span id="vt-text"></span>
+          <button type="button" id="vt-dismiss" title="Verbergen">×</button>
+        </div>
         <div id="voice-status">
           <div class="vs-dot"></div>
           <span id="vs-label">Recording…</span>
@@ -3285,6 +3332,7 @@ async function initVoiceInput() {
     setVoicePttLabel('Hold to speak');
 
     buildVoiceMeter();
+    showVoiceTip();  // eenmalige uitleg-banner voor spatiebalk-PTT
 
     // Push-to-talk events (muis / touch / pen)
     pttBtn.addEventListener('pointerdown', onPttDown);
@@ -3292,9 +3340,11 @@ async function initVoiceInput() {
     pttBtn.addEventListener('pointerleave', onPttCancel);
     pttBtn.addEventListener('pointercancel', onPttCancel);
 
-    // Push-to-talk via spatiebalk (alleen als user-input niet focus heeft)
-    document.addEventListener('keydown', onPttKeyDown);
-    document.addEventListener('keyup',   onPttKeyUp);
+    // Push-to-talk via spatiebalk — capture-phase zodat we vóór de textarea
+    // default-input het spatie-karakter kunnen onderdrukken.
+    document.addEventListener('keydown',  onPttKeyDown,  true);
+    document.addEventListener('keyup',    onPttKeyUp,    true);
+    document.addEventListener('keypress', onPttKeyPress, true);
 
   } catch (err) {
     console.warn('[OIP voice] Voice init failed:', err);
@@ -3640,6 +3690,37 @@ function buildVoiceMeter() {
   }
 }
 
+// Eenmalige uitleg-banner voor spatiebalk-PTT (plus muis-optie)
+function showVoiceTip() {
+  const tip = document.getElementById('voice-tip');
+  const txt = document.getElementById('vt-text');
+  const dismissBtn = document.getElementById('vt-dismiss');
+  if (!tip || !txt) return;
+
+  // Al eerder gesloten? Dan niet opnieuw tonen (bewaard in localStorage indien beschikbaar)
+  let dismissed = false;
+  try { dismissed = localStorage.getItem('oip-voice-tip-dismissed') === '1'; } catch (_) {}
+  if (dismissed) return;
+
+  const isEN = lang === 'en';
+  txt.innerHTML = isEN
+    ? '<strong>Voice input active.</strong> Hold <kbd style="padding:1px 6px;border:1px solid var(--cyan);border-radius:3px;font-family:var(--mono)">Space</kbd> to speak (only when the input is empty), or press and hold the <strong>Hold to speak</strong> button. Release to send to Whisper.'
+    : '<strong>Spraakinvoer actief.</strong> Houd <kbd style="padding:1px 6px;border:1px solid var(--cyan);border-radius:3px;font-family:var(--mono)">Spatie</kbd> ingedrukt om te spreken (alleen wanneer het veld leeg is), of houd de knop <strong>Hold to speak</strong> ingedrukt. Loslaten stuurt de opname naar Whisper.';
+
+  tip.classList.add('active');
+
+  if (dismissBtn && !dismissBtn._wired) {
+    dismissBtn._wired = true;
+    dismissBtn.addEventListener('click', () => {
+      tip.classList.remove('active');
+      try { localStorage.setItem('oip-voice-tip-dismissed', '1'); } catch (_) {}
+    });
+  }
+
+  // Ook automatisch verbergen zodra de deelnemer voor het eerst spraak heeft gebruikt
+  // (handled in handleVoiceTranscript)
+}
+
 function updateVoiceMeter(level) {
   // level: 0..1
   const meter = document.getElementById('vs-meter');
@@ -3692,7 +3773,12 @@ function onPttKeyDown(e) {
     if (val.length > 0) return;
   }
 
+  // Voorkom dat de spatie als karakter in het invoerveld belandt.
+  // Belangrijk: dit MOET vóór elke andere keydown-handler gebeuren, daarom is de listener
+  // met { capture: true } geregistreerd (zie initVoiceInput).
   e.preventDefault();
+  e.stopPropagation();
+
   if (!voiceSpaceDown) {
     voiceSpaceDown = true;
     voiceInput.start();
@@ -3700,9 +3786,24 @@ function onPttKeyDown(e) {
 }
 function onPttKeyUp(e) {
   if (e.code !== 'Space') return;
+  // Ook bij keyup de default-actie voorkomen tijdens PTT, zodat eventuele late spatie niet alsnog wordt ingevoegd
+  if (voiceSpaceDown) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
   if (!voiceSpaceDown) return;
   voiceSpaceDown = false;
   if (voiceInput?.state === 'recording') voiceInput.stop();
+}
+
+// Extra vangnet: tijdens PTT-opname via spatiebalk ook keypress-events blokkeren.
+// Sommige browsers (met name Firefox op Linux) genereren nog een extra keypress
+// waarbij het teken wordt ingevoegd, zelfs als keydown preventDefault gebruikt.
+function onPttKeyPress(e) {
+  if (voiceSpaceDown && (e.code === 'Space' || e.key === ' ')) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
 }
 
 function handleVoiceStateChange(state) {
@@ -3750,6 +3851,13 @@ function handleVoiceTranscript(text) {
   // Cursor aan het einde
   const end = inp.value.length;
   inp.setSelectionRange(end, end);
+
+  // Tip automatisch verbergen na eerste succesvolle transcriptie — de operator snapt het nu
+  const tip = document.getElementById('voice-tip');
+  if (tip?.classList.contains('active')) {
+    tip.classList.remove('active');
+    try { localStorage.setItem('oip-voice-tip-dismissed', '1'); } catch (_) {}
+  }
 }
 
 function handleVoiceError(err) {
