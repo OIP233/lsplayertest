@@ -4880,7 +4880,7 @@ Geef je debriefing UITSLUITEND als geldig JSON-object — geen tekst erbuiten, g
     "strengths": ["<kort, concreet sterk punt>", "..."],
     "improvements": ["<kort, concreet verbeterpunt>", "..."],
     "exampleQuotes": [
-      { "quote": "<letterlijk citaat, max 15 woorden>", "comment": "<waarom dit illustratief is — positief of negatief>" }
+      { "quote": "<letterlijk citaat zonder aanhalingstekens eromheen, max 15 woorden>", "comment": "<waarom dit illustratief is — positief of negatief>" }
     ]
   },
   "learningPoints": [
@@ -4899,6 +4899,17 @@ Gebruik de naam die overeenkomt met de taalinstelling van het scenario (zie LANG
 communicationAssessment: kies 4-6 aspecten die hier relevant zijn (niet alle zeven hoeven gebruikt). De scores moeten consistent zijn met de "Communicatie"-competentie-score. Schrijf de aspectnamen in de taal van het scenario.
 Tijdlijn: max 8 momenten, alleen wat werkelijk significant was.
 Leerpunten: 2-3 items. Minimaal één "improve" of "core" — een debriefing zonder verbeterpunt is geen debriefing.
+
+KRITISCHE JSON-REGELS — de output MOET geldige JSON zijn:
+- Gebruik GEEN dubbele aanhalingstekens (") binnen string-waarden. Als je een citaat moet inbedden, gebruik dan enkele aanhalingstekens (') of geen aanhalingstekens.
+  FOUT:  "quote": "hij zei "alles veilig""
+  GOED:  "quote": "hij zei: alles veilig"
+  GOED:  "quote": "hij zei: 'alles veilig'"
+- Gebruik GEEN trailing commas (geen komma na het laatste item in een array of object).
+- Gebruik GEEN regelovergangen (newlines) midden in een string-waarde; houd iedere waarde op één logische regel.
+- Gebruik GEEN markdown-fences zoals \`\`\`json om je antwoord heen — alleen pure JSON.
+- Escape backslashes correct wanneer die in een waarde voorkomen.
+
 ${(()=>{const el=getEffectiveLang();return el==='de'?'Language: German.':el==='es'?'Language: Spanish.':el==='fr'?'Language: French.':el==='pl'?'Language: Polish.':el==='en'?'Language: English.':'Taal: Nederlands.';})()} Tone: professional and direct, not patronising.`;
 
   try {
@@ -4935,9 +4946,28 @@ ${(()=>{const el=getEffectiveLang();return el==='de'?'Language: German.':el==='e
     const raw = data.content?.[0]?.text || '';
     if (!raw) throw new Error('Leeg antwoord van API');
 
-    // Strip eventuele markdown-fences en parse JSON
+    // Strip eventuele markdown-fences
     const clean = raw.replace(/^```json\s*/,'').replace(/\s*```$/,'').trim();
-    const debrief = JSON.parse(clean);
+
+    // Robuuste JSON-parse: probeer eerst direct, dan met reparatie, anders logging + foutmelding
+    let debrief;
+    try {
+      debrief = JSON.parse(clean);
+    } catch (firstErr) {
+      console.warn('[OIP debrief] JSON parse faalde, probeer reparatie:', firstErr.message);
+      const repaired = repairDebriefJson(clean);
+      try {
+        debrief = JSON.parse(repaired);
+        console.log('[OIP debrief] Gerepareerde JSON succesvol geparsed.');
+      } catch (secondErr) {
+        // Volledige raw-output loggen voor debug, dan een nette fout gooien
+        console.warn('[OIP debrief] Ook gerepareerde JSON faalde:', secondErr.message);
+        console.log('[OIP debrief] Raw AI output:', clean);
+        throw new Error((lang==='en'
+          ? 'Debrief output was not valid JSON. See browser console for raw output, then try again.'
+          : 'Debrief-antwoord was geen geldige JSON. Zie browser-console voor ruwe output en probeer opnieuw.'));
+      }
+    }
     renderDebrief(debrief, durationStr);
 
   } catch(e) {
@@ -4955,6 +4985,85 @@ ${(()=>{const el=getEffectiveLang();return el==='de'?'Language: German.':el==='e
         </button>
       </div>`;
   }
+}
+
+// ─── Robuuste reparatie voor kapotte JSON van de AI ────────────────────
+// De AI kan soms JSON retourneren met niet-geëscapete dubbele aanhalingstekens in
+// string-waarden (vooral in exampleQuotes.quote). Deze functie probeert de meest
+// voorkomende problemen te herstellen zonder de content weg te gooien.
+function repairDebriefJson(text) {
+  let t = text;
+
+  // 1. Smart quotes → gewone aanhalingstekens (komt voor bij sommige modellen)
+  t = t.replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+       .replace(/[\u2018\u2019\u201A\u201B]/g, "'");
+
+  // 2. Trailing commas voor } of ] weghalen: {"a":1,} of [1,2,]
+  t = t.replace(/,(\s*[}\]])/g, '$1');
+
+  // 3. Character-voor-character escapen van interne dubbele aanhalingstekens.
+  //    We lopen door de JSON en vinden string-waarden (na een : of in een array).
+  //    Dubbele aanhalingstekens BINNEN een string-waarde worden geëscapet.
+  t = escapeInnerQuotes(t);
+
+  return t;
+}
+
+// Escape dubbele aanhalingstekens die binnen een string-waarde staan
+// (dus tussen openings- en sluit-quote van een JSON-string).
+// Gebruikt een eenvoudige state-machine.
+function escapeInnerQuotes(src) {
+  let out = '';
+  let inString = false;
+  let i = 0;
+  const n = src.length;
+
+  while (i < n) {
+    const ch = src[i];
+
+    if (!inString) {
+      out += ch;
+      if (ch === '"') inString = true;
+      i++;
+      continue;
+    }
+
+    // We zitten in een string. Opties: escape-sequence, sluit-quote, of content.
+    if (ch === '\\') {
+      // Escape sequence: neem dit karakter én het volgende over
+      out += ch;
+      if (i + 1 < n) out += src[i + 1];
+      i += 2;
+      continue;
+    }
+
+    if (ch === '"') {
+      // Is dit echt het einde van de string, of een niet-geëscapete " binnenin?
+      // Kijk naar het eerste niet-whitespace karakter dat volgt:
+      //   , : } ] einde-van-input → dit is het einde van de string
+      //   iets anders (letter, haakje open, etc.) → dit is een lek en moet geëscapet
+      let j = i + 1;
+      while (j < n && /\s/.test(src[j])) j++;
+      const next = j < n ? src[j] : '';
+      if (next === '' || next === ',' || next === ':' || next === '}' || next === ']') {
+        // Legitiem einde van de string
+        out += ch;
+        inString = false;
+        i++;
+      } else {
+        // Niet-geëscapete " binnen een string → escapen
+        out += '\\"';
+        i++;
+      }
+      continue;
+    }
+
+    // Gewoon content binnen string
+    out += ch;
+    i++;
+  }
+
+  return out;
 }
 
 function renderDebrief(d, durationStr) {
