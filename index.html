@@ -3233,22 +3233,45 @@ async function initVoiceInput() {
   const errBadge = document.getElementById('voice-err-badge');
   if (!pttBtn) return;
 
+  // Geen MediaRecorder of mic-permissies in deze browser?
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    console.warn('[OIP voice] Browser ondersteunt geen MediaRecorder of getUserMedia');
+    if (errBadge) {
+      errBadge.style.display = 'inline-block';
+      errBadge.title = 'Browser ondersteunt geen audio-opname';
+    }
+    setVoicePttLabel('Voice unsupported');
+    pttBtn.disabled = true;
+    return;
+  }
+
+  // Secure-context check: getUserMedia werkt niet op file:// of http:// (behalve localhost)
+  const isFile = location.protocol === 'file:';
+  const isInsecureHttp = location.protocol === 'http:' &&
+    !['localhost', '127.0.0.1', '::1'].includes(location.hostname);
+  if (isFile || isInsecureHttp || (window.isSecureContext === false)) {
+    const reason = isFile
+      ? 'Pagina draait via file:// — browsers staan microfoon-toegang niet toe op lokale bestanden. ' +
+        'Open via een lokale webserver (bv. http://localhost:8000) of via https://'
+      : 'Pagina draait via onveilige http:// — microfoon-toegang vereist https:// of localhost.';
+    console.warn('[OIP voice] ' + reason);
+    if (errBadge) {
+      errBadge.style.display = 'inline-block';
+      errBadge.textContent = isFile ? '⚠ run via http(s)://' : '⚠ insecure origin';
+      errBadge.title = reason;
+    }
+    setVoicePttLabel(isFile ? 'Run via localhost' : 'Needs HTTPS');
+    pttBtn.disabled = true;
+    voiceReady = false;
+    return;
+  }
+
   try {
-    // Module dynamisch importeren vanaf Netlify deployment
-    const moduleUrl = `${VOICE_CONFIG.baseUrl.replace(/\/$/, '')}/voice-input.js`;
-    const mod = await import(moduleUrl);
-    const VoiceInput = mod.VoiceInput;
-    if (!VoiceInput) throw new Error('VoiceInput export not found in module');
-
-    // Scenario-specifieke prompt opbouwen
-    const prompt = buildVoicePrompt();
-    const effLang = getEffectiveLang();
-
-    voiceInput = new VoiceInput({
+    // Inline VoiceInput-instance (geen externe module-import — voorkomt CORS-problemen)
+    voiceInput = new InlineVoiceInput({
       endpoint: `${VOICE_CONFIG.baseUrl.replace(/\/$/, '')}/api/transcribe`,
-      language: effLang,
-      prompt: prompt,
-      useFallback: VOICE_CONFIG.useFallback,
+      language: getEffectiveLang(),
+      prompt: buildVoicePrompt(),
       audioLevelCallback: updateVoiceMeter,
       onStateChange: handleVoiceStateChange,
       onTranscript: handleVoiceTranscript,
@@ -3256,11 +3279,11 @@ async function initVoiceInput() {
     });
 
     voiceReady = true;
-    console.log('[OIP voice] Voice input ready · lang=' + effLang);
+    console.log('[OIP voice] Voice input ready (inline) · lang=' + getEffectiveLang() +
+                ' · endpoint=' + voiceInput.endpoint);
     if (errBadge) errBadge.style.display = 'none';
     setVoicePttLabel('Hold to speak');
 
-    // Meter-bars bouwen
     buildVoiceMeter();
 
     // Push-to-talk events (muis / touch / pen)
@@ -3269,19 +3292,238 @@ async function initVoiceInput() {
     pttBtn.addEventListener('pointerleave', onPttCancel);
     pttBtn.addEventListener('pointercancel', onPttCancel);
 
-    // Push-to-talk via spatiebalk (globaal; alleen als user-input niet focus heeft)
+    // Push-to-talk via spatiebalk (alleen als user-input niet focus heeft)
     document.addEventListener('keydown', onPttKeyDown);
     document.addEventListener('keyup',   onPttKeyUp);
 
   } catch (err) {
-    console.warn('[OIP voice] Voice module kon niet geladen worden:', err);
+    console.warn('[OIP voice] Voice init failed:', err);
     voiceReady = false;
     if (errBadge) {
       errBadge.style.display = 'inline-block';
-      errBadge.title = `Voice module offline — ${err.message || 'module not reachable'}`;
+      errBadge.title = `Voice init failed — ${err.message || err}`;
     }
     setVoicePttLabel('Voice offline');
     if (pttBtn) pttBtn.disabled = true;
+  }
+}
+
+// ─── Inline VoiceInput-implementatie ────────────────────────────
+// Self-contained: gebruikt MediaRecorder + getUserMedia + AudioContext.
+// Stuurt POST naar de transcribe-endpoint met FormData (audio blob).
+class InlineVoiceInput {
+  constructor(opts) {
+    this.endpoint = opts.endpoint;
+    this.language = opts.language || 'nl';
+    this.prompt = opts.prompt || '';
+    this.onLevel = opts.audioLevelCallback;
+    this.onState = opts.onStateChange;
+    this.onTranscript = opts.onTranscript;
+    this.onError = opts.onError;
+    this.state = 'idle';   // idle | recording | processing
+    this.stream = null;
+    this.mediaRecorder = null;
+    this.chunks = [];
+    this.audioCtx = null;
+    this.analyser = null;
+    this.levelTimer = null;
+    this.recordStartTs = 0;
+  }
+
+  setLanguage(l) { if (l) this.language = l; }
+  setPrompt(p) { if (typeof p === 'string') this.prompt = p; }
+
+  async start() {
+    if (this.state !== 'idle') return;
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      });
+
+      // Kies een ondersteund mime-type (browser-afhankelijk)
+      const candidates = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/ogg;codecs=opus',
+        'audio/mp4',
+        '',
+      ];
+      let mimeType = '';
+      for (const t of candidates) {
+        if (!t || (window.MediaRecorder && MediaRecorder.isTypeSupported(t))) {
+          mimeType = t;
+          break;
+        }
+      }
+
+      this.mediaRecorder = mimeType
+        ? new MediaRecorder(this.stream, { mimeType })
+        : new MediaRecorder(this.stream);
+      this.chunks = [];
+      this.mediaRecorder.addEventListener('dataavailable', e => {
+        if (e.data && e.data.size > 0) this.chunks.push(e.data);
+      });
+      this.mediaRecorder.addEventListener('stop', () => this._onStop());
+      this.mediaRecorder.addEventListener('error', e => {
+        console.warn('[OIP voice] MediaRecorder error:', e);
+        this._error('record', e.error?.message || 'recording error');
+      });
+      this.mediaRecorder.start(250);
+
+      // Audio level metering setup
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        this.audioCtx = new Ctx();
+        const src = this.audioCtx.createMediaStreamSource(this.stream);
+        this.analyser = this.audioCtx.createAnalyser();
+        this.analyser.fftSize = 512;
+        this.analyser.smoothingTimeConstant = 0.5;
+        src.connect(this.analyser);
+        this._startLevelMonitor();
+      } catch (e) {
+        console.warn('[OIP voice] Audio metering setup failed (non-fatal):', e);
+      }
+
+      this.recordStartTs = Date.now();
+      this._setState('recording');
+    } catch (err) {
+      console.warn('[OIP voice] getUserMedia failed:', err);
+      this._cleanup();
+      // Vriendelijke error-classificatie
+      const name = err.name || '';
+      let msg = err.message || String(err);
+      if (name === 'NotAllowedError' || name === 'PermissionDeniedError') msg = 'Microphone permission denied';
+      else if (name === 'NotFoundError') msg = 'No microphone found';
+      else if (name === 'NotReadableError') msg = 'Microphone is in use by another app';
+      this._error('mic', msg);
+      this._setState('idle');
+    }
+  }
+
+  stop() {
+    if (this.state !== 'recording') return;
+    if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+      try { this.mediaRecorder.stop(); } catch (e) { console.warn('[OIP voice] stop() failed:', e); }
+    }
+  }
+
+  cancel() {
+    this.chunks = [];
+    if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+      try { this.mediaRecorder.stop(); } catch (e) {}
+    }
+    this._cleanup();
+    this._setState('idle');
+  }
+
+  async _onStop() {
+    this._stopLevelMonitor();
+    const duration = Date.now() - this.recordStartTs;
+    const blobType = this.chunks[0]?.type || this.mediaRecorder?.mimeType || 'audio/webm';
+    const blob = new Blob(this.chunks, { type: blobType });
+    this.chunks = [];
+    this._cleanup();
+
+    // Erg korte opname (<300 ms) of erg klein blob? Waarschijnlijk per ongeluk — niet versturen
+    if (duration < 300 || blob.size < 500) {
+      console.log('[OIP voice] Recording too short, ignoring (dur=' + duration + 'ms, size=' + blob.size + ')');
+      this._setState('idle');
+      return;
+    }
+
+    this._setState('processing');
+    try {
+      const text = await this._transcribe(blob);
+      if (text && text.trim()) {
+        this.onTranscript?.(text.trim());
+      } else {
+        console.log('[OIP voice] Empty transcript');
+      }
+    } catch (err) {
+      console.warn('[OIP voice] Transcription failed:', err);
+      this._error('transcribe', err.message || String(err));
+    } finally {
+      this._setState('idle');
+    }
+  }
+
+  async _transcribe(blob) {
+    // Bestandsextensie afleiden uit mime-type
+    const t = blob.type || 'audio/webm';
+    const ext = t.includes('mp4') ? 'm4a'
+              : t.includes('ogg') ? 'ogg'
+              : t.includes('wav') ? 'wav'
+              : 'webm';
+    const file = new File([blob], `recording.${ext}`, { type: t });
+
+    const fd = new FormData();
+    // Stuur onder beide veldnamen voor compatibiliteit met verschillende API-wrappers
+    fd.append('file', file);
+    fd.append('audio', file);
+    if (this.language) fd.append('language', this.language);
+    if (this.prompt)   fd.append('prompt', this.prompt);
+    fd.append('model', 'whisper-1');
+    fd.append('response_format', 'json');
+
+    const res = await fetch(this.endpoint, { method: 'POST', body: fd });
+
+    if (!res.ok) {
+      let detail = '';
+      try { detail = (await res.text()).slice(0, 200); } catch (_) {}
+      throw new Error(`HTTP ${res.status} ${res.statusText}${detail ? ' — ' + detail : ''}`);
+    }
+
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (ct.includes('application/json')) {
+      const j = await res.json();
+      // Verschillende API-wrappers gebruiken verschillende veldnamen
+      return j.text ?? j.transcript ?? j.transcription ?? j.result ?? j.data?.text ?? '';
+    }
+    return (await res.text()).trim();
+  }
+
+  _startLevelMonitor() {
+    if (!this.analyser) return;
+    const buf = new Uint8Array(this.analyser.fftSize);
+    const tick = () => {
+      if (!this.analyser) return;
+      this.analyser.getByteTimeDomainData(buf);
+      let peak = 0;
+      for (let i = 0; i < buf.length; i++) {
+        const v = Math.abs(buf[i] - 128) / 128;
+        if (v > peak) peak = v;
+      }
+      this.onLevel?.(peak);
+      this.levelTimer = requestAnimationFrame(tick);
+    };
+    tick();
+  }
+
+  _stopLevelMonitor() {
+    if (this.levelTimer) { cancelAnimationFrame(this.levelTimer); this.levelTimer = null; }
+    this.onLevel?.(0);
+  }
+
+  _cleanup() {
+    if (this.stream) {
+      this.stream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} });
+      this.stream = null;
+    }
+    if (this.audioCtx) {
+      try { this.audioCtx.close(); } catch (e) {}
+      this.audioCtx = null;
+    }
+    this.analyser = null;
+    this.mediaRecorder = null;
+  }
+
+  _setState(s) {
+    this.state = s;
+    this.onState?.(s);
+  }
+
+  _error(type, message) {
+    this.onError?.({ type, message });
   }
 }
 
@@ -3291,8 +3533,9 @@ function buildVoicePrompt() {
   const sc = scenarioConfig?.aiScenario;
 
   // Namen van AI-rollen toevoegen (die worden vaak uitgesproken)
-  if (configRoles && configRoles.length) {
-    parts.push('Roles: ' + configRoles.join(', ') + '.');
+  const roleNames = (sc?.roles || []).map(r => r?.name).filter(Boolean);
+  if (roleNames.length) {
+    parts.push('Roles: ' + roleNames.join(', ') + '.');
   }
   // Deelnemer-naam als relevante context
   const pName = scenarioConfig?.participant?.name;
@@ -3417,7 +3660,7 @@ function handleVoiceTranscript(text) {
 }
 
 function handleVoiceError(err) {
-  console.warn('[OIP voice] error:', err);
+  console.warn('[OIP voice] error:', err?.type || 'unknown', '—', err?.message || err);
   const bar = document.getElementById('voice-status');
   const lbl = document.getElementById('vs-label');
   const badge = document.getElementById('voice-err-badge');
