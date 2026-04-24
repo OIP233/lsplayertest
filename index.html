@@ -3465,6 +3465,10 @@ class InlineVoiceInput {
     fd.append('model', 'whisper-1');
     fd.append('response_format', 'json');
 
+    console.log('[OIP voice] POST → ' + this.endpoint +
+                ' · audio: ' + Math.round(blob.size/1024) + ' KB · ' + t +
+                ' · lang: ' + this.language);
+
     const res = await fetch(this.endpoint, { method: 'POST', body: fd });
 
     if (!res.ok) {
@@ -3474,12 +3478,67 @@ class InlineVoiceInput {
     }
 
     const ct = (res.headers.get('content-type') || '').toLowerCase();
+    let text = '';
+    let raw = null;
+
     if (ct.includes('application/json')) {
-      const j = await res.json();
-      // Verschillende API-wrappers gebruiken verschillende veldnamen
-      return j.text ?? j.transcript ?? j.transcription ?? j.result ?? j.data?.text ?? '';
+      raw = await res.json();
+      console.log('[OIP voice] API response (JSON):', raw);
+      text = InlineVoiceInput._extractText(raw);
+    } else {
+      raw = (await res.text()).trim();
+      console.log('[OIP voice] API response (text):', raw.slice(0, 300));
+      // Sommige endpoints retourneren plain text, andere stiekem JSON met text/plain content-type
+      if (raw.startsWith('{') || raw.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(raw);
+          text = InlineVoiceInput._extractText(parsed);
+        } catch (_) {
+          text = raw;
+        }
+      } else {
+        text = raw;
+      }
     }
-    return (await res.text()).trim();
+
+    if (!text) {
+      console.warn('[OIP voice] Geen tekst gevonden in respons. Volledige respons:', raw);
+    } else {
+      console.log('[OIP voice] Transcript:', text);
+    }
+    return text;
+  }
+
+  // Recursief zoeken naar een transcript-string in willekeurige JSON-structuur.
+  // Probeert eerst bekende veldnamen op het top-level, daarna recursief.
+  static _extractText(obj) {
+    if (obj == null) return '';
+    if (typeof obj === 'string') return obj;
+    if (typeof obj !== 'object') return '';
+
+    // Top-level bekende veldnamen, in volgorde van waarschijnlijkheid
+    const keys = ['text', 'transcript', 'transcription', 'result', 'message', 'content', 'output'];
+    for (const k of keys) {
+      const v = obj[k];
+      if (typeof v === 'string' && v.trim()) return v;
+      if (v && typeof v === 'object') {
+        const nested = InlineVoiceInput._extractText(v);
+        if (nested) return nested;
+      }
+    }
+    // Laatste poging: data, body, response, payload
+    for (const k of ['data', 'body', 'response', 'payload']) {
+      if (obj[k]) {
+        const nested = InlineVoiceInput._extractText(obj[k]);
+        if (nested) return nested;
+      }
+    }
+    // Echt allerlaatste poging: scan ALLE waarden
+    for (const k of Object.keys(obj)) {
+      const v = obj[k];
+      if (typeof v === 'string' && v.trim() && v.length > 1) return v;
+    }
+    return '';
   }
 
   _startLevelMonitor() {
