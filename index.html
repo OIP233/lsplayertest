@@ -3573,17 +3573,19 @@ async function initScenario() {
   }
   renderPhaseControls();
 
+  // Voice module initialiseren (await zodat radiocheck weet of voiceReady true is)
+  await initVoiceInput();
+
+  // Radio check vóór scenario-start (alleen eerste keer of expliciet teruggevraagd)
+  // Briefing/phase-timers starten pas ná de radiocheck zodat de tijd niet wegtikt
+  // terwijl de deelnemer zijn microfoon test.
+  await maybeRunRadioCheck();
+
   if (hasBriefing) {
     startBriefingTimer(briefingCfg.dur || 120);
   } else {
     startPhaseTimers();
   }
-
-  // Voice module initialiseren (await zodat radiocheck weet of voiceReady true is)
-  await initVoiceInput();
-
-  // Radio check vóór scenario-start (alleen eerste keer of expliciet teruggevraagd)
-  await maybeRunRadioCheck();
 
   callClaude('START', true);
 }
@@ -4086,6 +4088,142 @@ async function maybeRunRadioCheck() {
   return runRadioCheck();
 }
 
+// Volledige vertalingen voor alle door de player ondersteunde talen.
+// De testzin bevat per taal tankterminal/proces-jargon zodat we tegelijk testen
+// of Whisper het vakjargon correct oppikt — dat geeft een eerlijker beeld dan
+// een neutrale "the quick brown fox"-zin.
+function pickRadioCheckTexts(effL) {
+  const texts = {
+    en: {
+      title:    'Radio check — microphone test',
+      intro:    'Before we begin, a quick microphone test. <strong>Read the line below out loud</strong> at your normal radio voice. Hold <kbd>Space</kbd> or the button — release when done.',
+      label:    'Read aloud',
+      sentence: 'Operator to control room: visual on the VRU absorber, levels nominal, performing LMRA before opening the valve.',
+      btnIdle:    'Hold to speak',
+      btnRec:     'Release when done',
+      btnProc:    'Processing…',
+      ready:      'Ready when you are.',
+      recording:  'Recording…',
+      processing: 'Sending to Whisper…',
+      ok:         'Microphone working',
+      okDetail:   'Whisper transcribed your speech successfully. You will hear the AI roles respond when you press send.',
+      partial:    'Partial match',
+      partialDetail: 'Whisper picked up your voice but the transcription differs from the expected sentence. This can happen with background noise, accents, or jargon. Try again or proceed if this is acceptable.',
+      errorTitle: 'Voice test failed',
+      errorDetail: 'There was a problem with the microphone or the transcription service. You can still type your responses during the scenario.',
+      skip:       'Skip · start now',
+      retry:      '↺ Try again',
+      cont:       'Start scenario →',
+    },
+    nl: {
+      title:    'Radio check — microfoontest',
+      intro:    'Voordat we beginnen, een korte microfoontest. <strong>Lees de zin hieronder hardop voor</strong> met je normale radiostem. Houd <kbd>Spatie</kbd> of de knop ingedrukt — laat los als je klaar bent.',
+      label:    'Lees hardop voor',
+      sentence: 'Operator aan controlekamer: zicht op de VRU-absorber, niveaus nominaal, ik voer een LMRA uit voor ik de afsluiter open.',
+      btnIdle:    'Houd vast om te spreken',
+      btnRec:     'Loslaten als je klaar bent',
+      btnProc:    'Verwerken…',
+      ready:      'Klaar wanneer jij dat bent.',
+      recording:  'Opname loopt…',
+      processing: 'Versturen naar Whisper…',
+      ok:         'Microfoon werkt',
+      okDetail:   'Whisper heeft je spraak succesvol getranscribeerd. De AI-rollen reageren zodra je een bericht verstuurt.',
+      partial:    'Gedeeltelijke match',
+      partialDetail: 'Whisper heeft je spraak opgepakt maar de transcriptie wijkt af van de verwachte zin. Dit kan komen door achtergrondgeluid, accent of vakjargon. Probeer opnieuw of ga door als dit acceptabel is.',
+      errorTitle: 'Spraaktest mislukt',
+      errorDetail: 'Er was een probleem met de microfoon of de transcriptie-service. Je kunt nog steeds typen tijdens het scenario.',
+      skip:       'Overslaan · direct beginnen',
+      retry:      '↺ Opnieuw',
+      cont:       'Start scenario →',
+    },
+    de: {
+      title:    'Funkprobe — Mikrofontest',
+      intro:    'Bevor wir beginnen, eine kurze Mikrofonprüfung. <strong>Lesen Sie den Satz unten laut vor</strong> mit Ihrer normalen Funkstimme. Halten Sie <kbd>Leertaste</kbd> oder die Taste gedrückt — loslassen, wenn Sie fertig sind.',
+      label:    'Vorlesen',
+      sentence: 'Operator an Leitwarte: Sicht auf den VRU-Absorber, Werte im Nominalbereich, ich führe eine LMRA durch, bevor ich das Ventil öffne.',
+      btnIdle:    'Zum Sprechen halten',
+      btnRec:     'Loslassen wenn fertig',
+      btnProc:    'Verarbeite…',
+      ready:      'Bereit, wenn Sie es sind.',
+      recording:  'Aufnahme läuft…',
+      processing: 'Sende an Whisper…',
+      ok:         'Mikrofon funktioniert',
+      okDetail:   'Whisper hat Ihre Sprache erfolgreich transkribiert. Die KI-Rollen antworten, sobald Sie eine Nachricht senden.',
+      partial:    'Teilweise Übereinstimmung',
+      partialDetail: 'Whisper hat Ihre Stimme erkannt, aber die Transkription weicht vom erwarteten Satz ab. Dies kann an Hintergrundgeräuschen, Akzent oder Fachjargon liegen. Versuchen Sie es erneut oder fahren Sie fort, wenn dies akzeptabel ist.',
+      errorTitle: 'Sprachtest fehlgeschlagen',
+      errorDetail: 'Es gab ein Problem mit dem Mikrofon oder dem Transkriptionsdienst. Sie können Ihre Antworten weiterhin eingeben.',
+      skip:       'Überspringen · jetzt starten',
+      retry:      '↺ Erneut versuchen',
+      cont:       'Szenario starten →',
+    },
+    es: {
+      title:    'Prueba de radio — test de micrófono',
+      intro:    'Antes de empezar, una breve prueba de micrófono. <strong>Lee la frase de abajo en voz alta</strong> con tu voz de radio normal. Mantén pulsada la tecla <kbd>Espacio</kbd> o el botón — suelta cuando termines.',
+      label:    'Lee en voz alta',
+      sentence: 'Operador a sala de control: visual en el absorbedor VRU, niveles nominales, realizando LMRA antes de abrir la válvula.',
+      btnIdle:    'Mantén pulsado para hablar',
+      btnRec:     'Suelta cuando termines',
+      btnProc:    'Procesando…',
+      ready:      'Listo cuando lo estés.',
+      recording:  'Grabando…',
+      processing: 'Enviando a Whisper…',
+      ok:         'Micrófono funciona',
+      okDetail:   'Whisper ha transcrito tu voz con éxito. Las funciones de IA responderán cuando envíes un mensaje.',
+      partial:    'Coincidencia parcial',
+      partialDetail: 'Whisper ha captado tu voz, pero la transcripción difiere de la frase esperada. Esto puede ocurrir con ruido de fondo, acentos o jerga técnica. Vuelve a intentarlo o continúa si te parece aceptable.',
+      errorTitle: 'Prueba de voz fallida',
+      errorDetail: 'Hubo un problema con el micrófono o el servicio de transcripción. Aún puedes escribir tus respuestas durante el escenario.',
+      skip:       'Omitir · empezar ya',
+      retry:      '↺ Reintentar',
+      cont:       'Iniciar escenario →',
+    },
+    fr: {
+      title:    'Contrôle radio — test du micro',
+      intro:    'Avant de commencer, un rapide test de micro. <strong>Lisez la phrase ci-dessous à voix haute</strong> avec votre voix radio normale. Maintenez la touche <kbd>Espace</kbd> ou le bouton enfoncé — relâchez quand vous avez terminé.',
+      label:    'Lire à voix haute',
+      sentence: 'Opérateur à la salle de contrôle : vue sur l\'absorbeur VRU, niveaux nominaux, je réalise une LMRA avant d\'ouvrir la vanne.',
+      btnIdle:    'Maintenir pour parler',
+      btnRec:     'Relâcher une fois fini',
+      btnProc:    'Traitement…',
+      ready:      'Prêt quand vous l\'êtes.',
+      recording:  'Enregistrement…',
+      processing: 'Envoi à Whisper…',
+      ok:         'Microphone opérationnel',
+      okDetail:   'Whisper a transcrit votre parole avec succès. Les rôles IA répondront lorsque vous enverrez un message.',
+      partial:    'Correspondance partielle',
+      partialDetail: 'Whisper a capté votre voix, mais la transcription diffère de la phrase attendue. Cela peut être dû au bruit de fond, à l\'accent ou au jargon technique. Réessayez ou continuez si cela vous convient.',
+      errorTitle: 'Test vocal échoué',
+      errorDetail: 'Il y a eu un problème avec le microphone ou le service de transcription. Vous pouvez toujours saisir vos réponses pendant le scénario.',
+      skip:       'Passer · commencer',
+      retry:      '↺ Réessayer',
+      cont:       'Démarrer le scénario →',
+    },
+    pl: {
+      title:    'Test radia — sprawdzenie mikrofonu',
+      intro:    'Zanim zaczniemy, krótki test mikrofonu. <strong>Przeczytaj zdanie poniżej na głos</strong> normalnym tonem do radia. Przytrzymaj <kbd>Spację</kbd> lub przycisk — puść, gdy skończysz.',
+      label:    'Przeczytaj na głos',
+      sentence: 'Operator do sterowni: widok na absorber VRU, poziomy nominalne, wykonuję LMRA przed otwarciem zaworu.',
+      btnIdle:    'Przytrzymaj, aby mówić',
+      btnRec:     'Zwolnij, gdy skończysz',
+      btnProc:    'Przetwarzanie…',
+      ready:      'Gotowe, kiedy ty będziesz.',
+      recording:  'Nagrywanie…',
+      processing: 'Wysyłanie do Whisper…',
+      ok:         'Mikrofon działa',
+      okDetail:   'Whisper pomyślnie przetranskrybował twoją wypowiedź. Role AI odpowiedzą, gdy wyślesz wiadomość.',
+      partial:    'Częściowe dopasowanie',
+      partialDetail: 'Whisper wychwycił twój głos, ale transkrypcja różni się od oczekiwanego zdania. Może się to zdarzyć przy hałasie tła, akcencie lub branżowym żargonie. Spróbuj ponownie lub kontynuuj, jeśli to akceptowalne.',
+      errorTitle: 'Test głosowy nie powiódł się',
+      errorDetail: 'Wystąpił problem z mikrofonem lub usługą transkrypcji. Wciąż możesz wpisywać swoje odpowiedzi podczas scenariusza.',
+      skip:       'Pomiń · zacznij teraz',
+      retry:      '↺ Spróbuj ponownie',
+      cont:       'Rozpocznij scenariusz →',
+    },
+  };
+  return texts[effL] || texts.en;
+}
+
 function runRadioCheck() {
   return new Promise(resolve => {
     const overlay = document.getElementById('radiocheck-overlay');
@@ -4101,42 +4239,9 @@ function runRadioCheck() {
 
     if (!overlay || !micBtn) { resolve(); return; }
 
-    // Lokalisatie
+    // Lokalisatie — alle zes talen die de player ondersteunt
     const effL = getEffectiveLang();
-    const isEN = effL === 'en';
-    const T = {
-      title:    isEN ? 'Radio check — microphone test' : 'Radio check — microfoontest',
-      intro:    isEN
-        ? 'Before we begin, a quick microphone test. <strong>Read the line below out loud</strong> at your normal radio voice. Hold <kbd>Space</kbd> or the button — release when done.'
-        : 'Voordat we beginnen, een korte microfoontest. <strong>Lees de zin hieronder hardop voor</strong> met je normale radiostem. Houd <kbd>Spatie</kbd> of de knop ingedrukt — laat los als je klaar bent.',
-      label:    isEN ? 'Read aloud' : 'Lees hardop voor',
-      // Standaardzin met OIP-jargon zodat we ook jargon-herkenning testen
-      sentence: isEN
-        ? 'Operator to control room: visual on the VRU absorber, levels nominal, performing LMRA before opening the valve.'
-        : 'Operator aan controlekamer: zicht op de VRU-absorber, niveaus nominaal, ik voer een LMRA uit voor ik de afsluiter open.',
-      btnIdle:    isEN ? 'Hold to speak' : 'Houd vast om te spreken',
-      btnRec:     isEN ? 'Release when done' : 'Loslaten als je klaar bent',
-      btnProc:    isEN ? 'Processing…' : 'Verwerken…',
-      ready:      isEN ? 'Ready when you are.' : 'Klaar wanneer jij dat bent.',
-      recording:  isEN ? 'Recording…' : 'Opname loopt…',
-      processing: isEN ? 'Sending to Whisper…' : 'Versturen naar Whisper…',
-      tooShort:   isEN ? 'Too short — try again with a full sentence.' : 'Te kort — probeer opnieuw met een volledige zin.',
-      ok:         isEN ? 'Microphone working' : 'Microfoon werkt',
-      okDetail:   isEN
-        ? 'Whisper transcribed your speech successfully. You\'ll hear the AI roles respond when you press send.'
-        : 'Whisper heeft je spraak succesvol getranscribeerd. De AI-rollen reageren zodra je een bericht verstuurt.',
-      partial:    isEN ? 'Partial match' : 'Gedeeltelijke match',
-      partialDetail: isEN
-        ? 'Whisper picked up your voice but the transcription differs from the expected sentence. This can happen with background noise, accents, or jargon. Try again or proceed if this is acceptable.'
-        : 'Whisper heeft je spraak opgepakt maar de transcriptie wijkt af van de verwachte zin. Dit kan komen door achtergrondgeluid, accent of vakjargon. Probeer opnieuw of ga door als dit acceptabel is.',
-      errorTitle: isEN ? 'Voice test failed' : 'Spraaktest mislukt',
-      errorDetail: isEN
-        ? 'There was a problem with the microphone or the transcription service. You can still type your responses during the scenario.'
-        : 'Er was een probleem met de microfoon of de transcriptie-service. Je kunt nog steeds typen tijdens het scenario.',
-      skip:       isEN ? 'Skip · start now' : 'Overslaan · direct beginnen',
-      retry:      isEN ? '↺ Try again' : '↺ Opnieuw',
-      cont:       isEN ? 'Start scenario →' : 'Start scenario →',
-    };
+    const T = pickRadioCheckTexts(effL);
 
     document.getElementById('rc-title').textContent = T.title;
     document.getElementById('rc-intro').innerHTML = T.intro;
