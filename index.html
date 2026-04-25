@@ -4982,7 +4982,7 @@ ${(()=>{const el=getEffectiveLang();return el==='de'?'Language: German.':el==='e
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 1200,
+        max_tokens: 4096,
         messages: [{ role: 'user', content: debriefPrompt }]
       }),
       signal: controller.signal
@@ -5002,10 +5002,18 @@ ${(()=>{const el=getEffectiveLang();return el==='de'?'Language: German.':el==='e
     const raw = data.content?.[0]?.text || '';
     if (!raw) throw new Error('Leeg antwoord van API');
 
+    // Detecteer truncatie: bij max_tokens-stop kreeg de AI niet de kans om JSON af te ronden
+    const stopReason = data.stop_reason;
+    const wasTruncated = stopReason === 'max_tokens';
+    if (wasTruncated) {
+      console.warn('[OIP debrief] Response afgekapt op max_tokens — probeer gedeeltelijk te parsen.');
+    }
+    console.log('[OIP debrief] stop_reason:', stopReason, '· length:', raw.length, 'chars');
+
     // Strip eventuele markdown-fences
     const clean = raw.replace(/^```json\s*/,'').replace(/\s*```$/,'').trim();
 
-    // Robuuste JSON-parse: probeer eerst direct, dan met reparatie, anders logging + foutmelding
+    // Robuuste JSON-parse: directe poging → reparatie → reparatie-met-truncatie-recovery
     let debrief;
     try {
       debrief = JSON.parse(clean);
@@ -5016,12 +5024,24 @@ ${(()=>{const el=getEffectiveLang();return el==='de'?'Language: German.':el==='e
         debrief = JSON.parse(repaired);
         console.log('[OIP debrief] Gerepareerde JSON succesvol geparsed.');
       } catch (secondErr) {
-        // Volledige raw-output loggen voor debug, dan een nette fout gooien
-        console.warn('[OIP debrief] Ook gerepareerde JSON faalde:', secondErr.message);
-        console.log('[OIP debrief] Raw AI output:', clean);
-        throw new Error((lang==='en'
-          ? 'Debrief output was not valid JSON. See browser console for raw output, then try again.'
-          : 'Debrief-antwoord was geen geldige JSON. Zie browser-console voor ruwe output en probeer opnieuw.'));
+        // Tweede kans: probeer truncatie te herstellen door open structuren te sluiten
+        console.warn('[OIP debrief] Reparatie faalde, probeer truncatie te herstellen:', secondErr.message);
+        const recovered = recoverTruncatedJson(repaired);
+        try {
+          debrief = JSON.parse(recovered);
+          debrief._truncated = true;
+          console.log('[OIP debrief] Truncatie-recovery succesvol — debrief is mogelijk incompleet.');
+        } catch (thirdErr) {
+          console.warn('[OIP debrief] Alle parse-pogingen mislukt:', thirdErr.message);
+          console.log('[OIP debrief] Raw AI output:', clean);
+          throw new Error((lang==='en'
+            ? (wasTruncated
+                ? 'Debrief output was cut off (token limit). See console for details, then try again.'
+                : 'Debrief output was not valid JSON. See browser console for raw output, then try again.')
+            : (wasTruncated
+                ? 'Debrief-antwoord werd afgekapt (token-limiet). Zie console voor details en probeer opnieuw.'
+                : 'Debrief-antwoord was geen geldige JSON. Zie browser-console voor ruwe output en probeer opnieuw.')));
+        }
       }
     }
     renderDebrief(debrief, durationStr);
@@ -5122,6 +5142,68 @@ function escapeInnerQuotes(src) {
   return out;
 }
 
+// Probeert een afgekapte JSON-string af te ronden door:
+// 1. Te zoeken naar het laatste compleet-uitziende item (eindigt op } of ]+,)
+// 2. Open haakjes/quotes te tellen en bij te sluiten
+// Retourneert een best-effort herstelde versie. Niet perfect, maar genoeg om een
+// gedeeltelijke debrief te tonen i.p.v. een lege fout.
+function recoverTruncatedJson(text) {
+  if (!text || typeof text !== 'string') return text;
+  let t = text;
+
+  // 1. Verwijder een eventuele incomplete laatste tekst-fragment.
+  //    Een afgekapte string-waarde herken je aan: een open " gevolgd door tekst zonder sluit-".
+  //    We gaan terug tot het laatste karakter dat veilig is om af te kappen:
+  //    een sluit-haakje } of ] of een komma die ná een sluit-haakje komt.
+
+  // Eerst: tel open quotes om te kijken of we midden in een string zitten
+  // (gebruikt dezelfde state-machine als escapeInnerQuotes om escapes correct af te handelen)
+  let inString = false;
+  let lastSafePos = -1;  // laatste positie waar we veilig de string konden afsluiten
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (!inString) {
+      if (ch === '"') inString = true;
+      else if (ch === '}' || ch === ']') lastSafePos = i;
+    } else {
+      if (ch === '\\') { i++; continue; }  // skip volgende karakter
+      if (ch === '"') inString = false;
+    }
+  }
+
+  // Als we eindigen midden in een string, kap alles na de laatste veilige positie weg.
+  if (inString && lastSafePos >= 0) {
+    t = t.slice(0, lastSafePos + 1);
+  }
+
+  // 2. Verwijder een trailing komma die ontstaat na het wegkappen
+  t = t.replace(/,\s*$/, '');
+
+  // 3. Tel open haakjes en sluit ze in juiste volgorde
+  const stack = [];
+  let inStr = false;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (inStr) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === '{') stack.push('}');
+    else if (ch === '[') stack.push(']');
+    else if (ch === '}' || ch === ']') {
+      if (stack.length && stack[stack.length - 1] === ch) stack.pop();
+    }
+  }
+  // Nog een open string? Sluit 'm
+  if (inStr) t += '"';
+  // Sluit alle nog-open haakjes
+  while (stack.length) t += stack.pop();
+
+  return t;
+}
+
 function renderDebrief(d, durationStr) {
   try {
   lastDebriefData = { ...d, durationStr }; // bewaar voor export
@@ -5152,6 +5234,21 @@ function renderDebrief(d, durationStr) {
   if (bodyEl) bodyEl.style.display = 'block';
   if (expBar) expBar.style.display = 'flex';
   if (clsBar) clsBar.style.display = 'block';
+
+  // Truncatie-waarschuwing: als de AI's response is afgekapt, toon een banner
+  // bovenaan de debrief zodat de operator weet dat sommige onderdelen incompleet kunnen zijn
+  if (d._truncated && bodyEl) {
+    const existing = bodyEl.querySelector('.debrief-truncation-warning');
+    if (!existing) {
+      const warn = document.createElement('div');
+      warn.className = 'debrief-truncation-warning';
+      warn.style.cssText = 'padding:10px 14px;margin-bottom:14px;background:var(--amber-bg);border:1px solid var(--amber);border-left:3px solid var(--amber);border-radius:4px;font-family:var(--mono);font-size:12px;color:var(--amber);line-height:1.5';
+      warn.innerHTML = (lang === 'en'
+        ? '⚠ <strong>Note:</strong> the debrief response was cut off due to length. Some details (typically the last learning point) may be incomplete. Click <strong>Try again</strong> below to regenerate.'
+        : '⚠ <strong>Let op:</strong> de debrief is afgekapt vanwege lengte. Sommige details (meestal het laatste leerpunt) kunnen incompleet zijn. Klik <strong>Try again</strong> hieronder om opnieuw te genereren.');
+      bodyEl.insertBefore(warn, bodyEl.firstChild);
+    }
+  }
 
   // Open alle secties standaard
   ['timeline','analysis','comms','learning'].forEach(s => {
