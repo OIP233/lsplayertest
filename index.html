@@ -705,6 +705,279 @@ html, body {
 #centre-send-btn:hover:not(:disabled) { background:var(--blue); color:#fff; }
 #centre-send-btn:disabled { opacity:.3; cursor:not-allowed; }
 
+/* ── RADIO CHECK / MIC TEST OVERLAY ─────────────── */
+#radiocheck-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 12, 20, 0.85);
+  backdrop-filter: blur(4px);
+  z-index: 10000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+#radiocheck-overlay.active { display: flex; }
+
+#radiocheck-modal {
+  background: var(--bg2);
+  border: 1px solid var(--border-hi);
+  border-radius: 8px;
+  width: min(560px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6), 0 0 0 1px rgba(0, 188, 212, 0.15);
+  font-family: var(--mono);
+}
+
+#radiocheck-modal .rc-header {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg3);
+}
+#radiocheck-modal .rc-header .led {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 6px var(--cyan);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+#radiocheck-modal .rc-header h2 {
+  margin: 0;
+  font-family: var(--cond);
+  font-size: 14px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--cyan);
+  font-weight: 700;
+}
+
+#radiocheck-modal .rc-body { padding: 20px 22px; }
+
+.rc-step {
+  display: none;
+  flex-direction: column;
+  gap: 14px;
+}
+.rc-step.active { display: flex; }
+
+.rc-intro {
+  font-size: 13px;
+  color: var(--text-bright);
+  line-height: 1.55;
+}
+.rc-intro strong { color: var(--cyan); }
+.rc-intro kbd {
+  padding: 2px 7px;
+  border: 1px solid var(--cyan);
+  border-radius: 3px;
+  font-family: var(--mono);
+  color: var(--cyan);
+  font-size: 11px;
+}
+
+.rc-prompt-box {
+  padding: 14px 16px;
+  background: var(--bg3);
+  border-left: 3px solid var(--amber);
+  border-radius: 4px;
+  font-size: 14px;
+  color: var(--text-bright);
+  line-height: 1.5;
+}
+.rc-prompt-box .rc-prompt-label {
+  font-family: var(--cond);
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--amber);
+  margin-bottom: 6px;
+  display: block;
+}
+
+.rc-mic-area {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+  padding: 18px 14px;
+  background: var(--bg);
+  border: 1px dashed var(--border-hi);
+  border-radius: 6px;
+}
+.rc-mic-button {
+  background: var(--bg3);
+  border: 1px solid var(--border-hi);
+  color: var(--text-bright);
+  padding: 12px 28px;
+  border-radius: 4px;
+  font-family: var(--cond);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: all .15s;
+}
+.rc-mic-button:hover:not(:disabled) { border-color: var(--cyan); color: var(--cyan); }
+.rc-mic-button:disabled { opacity: .4; cursor: not-allowed; }
+.rc-mic-button.is-recording {
+  background: var(--red-bg);
+  border-color: var(--red);
+  color: var(--red);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.rc-mic-button.is-processing {
+  background: var(--amber-bg);
+  border-color: var(--amber);
+  color: var(--amber);
+}
+.rc-mic-button .rc-icon {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.rc-mic-button.is-processing .rc-icon {
+  background: transparent;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.rc-meter {
+  display: flex;
+  gap: 2px;
+  height: 14px;
+  width: 100%;
+  align-items: center;
+}
+.rc-meter .rc-bar {
+  flex: 1;
+  height: 100%;
+  background: var(--border);
+  border-radius: 1px;
+}
+.rc-meter .rc-bar.on      { background: var(--green); }
+.rc-meter .rc-bar.on-hi   { background: var(--amber); }
+.rc-meter .rc-bar.on-peak { background: var(--red); }
+
+.rc-status {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: center;
+  min-height: 18px;
+}
+
+.rc-result {
+  padding: 14px 16px;
+  border-radius: 6px;
+  border: 1px solid;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rc-result.ok      { background: var(--green-bg); border-color: var(--green); }
+.rc-result.warn    { background: var(--amber-bg); border-color: var(--amber); }
+.rc-result-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--cond);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: 700;
+}
+.rc-result.ok   .rc-result-head { color: var(--green); }
+.rc-result.warn .rc-result-head { color: var(--amber); }
+.rc-result-icon {
+  width: 18px; height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  flex-shrink: 0;
+}
+.rc-transcript {
+  padding: 8px 12px;
+  background: var(--bg2);
+  border-left: 3px solid var(--text-dim);
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-bright);
+  font-style: italic;
+  border-radius: 3px;
+}
+.rc-result-detail { font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+
+#radiocheck-modal .rc-footer {
+  padding: 12px 22px 18px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+}
+#radiocheck-modal .rc-footer .rc-skip {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 8px 14px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all .15s;
+}
+#radiocheck-modal .rc-footer .rc-skip:hover { color: var(--text); border-color: var(--border-hi); }
+#radiocheck-modal .rc-footer .rc-primary {
+  background: var(--cyan);
+  border: 1px solid var(--cyan);
+  color: var(--bg);
+  padding: 9px 22px;
+  border-radius: 4px;
+  font-family: var(--cond);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all .15s;
+}
+#radiocheck-modal .rc-footer .rc-primary:hover { background: transparent; color: var(--cyan); }
+#radiocheck-modal .rc-footer .rc-primary:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+#radiocheck-modal .rc-footer .rc-secondary {
+  background: var(--bg3);
+  border: 1px solid var(--border-hi);
+  color: var(--text);
+  padding: 9px 16px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+#radiocheck-modal .rc-footer .rc-secondary:hover { color: var(--cyan); border-color: var(--cyan); }
+#radiocheck-modal .rc-footer .rc-spacer { flex: 1; }
+
 /* Hint onder invoerveld */
 .input-hint {
   font-family: var(--mono);
@@ -1729,6 +2002,52 @@ body.light .msg.sys .msg-bub { color: var(--text-dim); }
 </style>
 </head>
 <body>
+
+
+<!-- RADIO CHECK OVERLAY (toont vóór scenario-start bij eerste sessie) -->
+<div id="radiocheck-overlay">
+  <div id="radiocheck-modal">
+    <div class="rc-header">
+      <div class="led"></div>
+      <h2 id="rc-title">Radio check — microfoontest</h2>
+    </div>
+    <div class="rc-body">
+      <!-- Stap 1: instructie + opname -->
+      <div class="rc-step active" id="rc-step-record">
+        <div class="rc-intro" id="rc-intro"></div>
+        <div class="rc-prompt-box">
+          <span class="rc-prompt-label" id="rc-prompt-label">Lees voor</span>
+          <span id="rc-prompt-text"></span>
+        </div>
+        <div class="rc-mic-area">
+          <button type="button" class="rc-mic-button" id="rc-mic-btn">
+            <span class="rc-icon"></span>
+            <span id="rc-mic-label">Houd vast om te spreken</span>
+          </button>
+          <div class="rc-meter" id="rc-meter"></div>
+          <div class="rc-status" id="rc-status"></div>
+        </div>
+      </div>
+      <!-- Stap 2: resultaat -->
+      <div class="rc-step" id="rc-step-result">
+        <div class="rc-result" id="rc-result-box">
+          <div class="rc-result-head">
+            <span class="rc-result-icon" id="rc-result-icon">✓</span>
+            <span id="rc-result-title"></span>
+          </div>
+          <div class="rc-transcript" id="rc-transcript"></div>
+          <div class="rc-result-detail" id="rc-result-detail"></div>
+        </div>
+      </div>
+    </div>
+    <div class="rc-footer">
+      <button type="button" class="rc-skip" id="rc-skip">Skip · ga direct beginnen</button>
+      <div class="rc-spacer"></div>
+      <button type="button" class="rc-secondary" id="rc-retry" style="display:none">↺ Opnieuw</button>
+      <button type="button" class="rc-primary" id="rc-continue" disabled>Start scenario →</button>
+    </div>
+  </div>
+</div>
 
 
 <!-- VERLOPEN OVERLAY -->
@@ -3188,7 +3507,7 @@ function runBootSequence() {
   }, totalDuration);
 }
 
-function initScenario() {
+async function initScenario() {
   const sc = scenarioConfig?.aiScenario;
 
   // Situatietekst — uit JSON, of demo-default als geen JSON geladen
@@ -3260,8 +3579,11 @@ function initScenario() {
     startPhaseTimers();
   }
 
-  // Voice module initialiseren (asynchroon, blokkeert scenario-start niet)
-  initVoiceInput();
+  // Voice module initialiseren (await zodat radiocheck weet of voiceReady true is)
+  await initVoiceInput();
+
+  // Radio check vóór scenario-start (alleen eerste keer of expliciet teruggevraagd)
+  await maybeRunRadioCheck();
 
   callClaude('START', true);
 }
@@ -3744,6 +4066,284 @@ function buildVoiceMeter() {
     bar.className = 'vs-bar';
     meter.appendChild(bar);
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// RADIO CHECK — microfoontest vóór scenario-start
+// ═══════════════════════════════════════════════════════════════
+// Wordt eenmalig getoond bij de eerste sessie (status in localStorage).
+// Doel: deelnemer hoort terug hoe Whisper hem verstaat, voordat het scenario
+// echt begint. Zo geen onnodige stress als de mic-instellingen niet kloppen.
+
+async function maybeRunRadioCheck() {
+  if (!voiceReady) return;  // geen voice-module → geen check
+  if (!VOICE_CONFIG.enabled) return;
+
+  let alreadyDone = false;
+  try { alreadyDone = localStorage.getItem('oip-radiocheck-done') === '1'; } catch (_) {}
+  if (alreadyDone) return;
+
+  return runRadioCheck();
+}
+
+function runRadioCheck() {
+  return new Promise(resolve => {
+    const overlay = document.getElementById('radiocheck-overlay');
+    const stepRecord = document.getElementById('rc-step-record');
+    const stepResult = document.getElementById('rc-step-result');
+    const micBtn = document.getElementById('rc-mic-btn');
+    const micLabel = document.getElementById('rc-mic-label');
+    const meter = document.getElementById('rc-meter');
+    const statusEl = document.getElementById('rc-status');
+    const skipBtn = document.getElementById('rc-skip');
+    const retryBtn = document.getElementById('rc-retry');
+    const continueBtn = document.getElementById('rc-continue');
+
+    if (!overlay || !micBtn) { resolve(); return; }
+
+    // Lokalisatie
+    const effL = getEffectiveLang();
+    const isEN = effL === 'en';
+    const T = {
+      title:    isEN ? 'Radio check — microphone test' : 'Radio check — microfoontest',
+      intro:    isEN
+        ? 'Before we begin, a quick microphone test. <strong>Read the line below out loud</strong> at your normal radio voice. Hold <kbd>Space</kbd> or the button — release when done.'
+        : 'Voordat we beginnen, een korte microfoontest. <strong>Lees de zin hieronder hardop voor</strong> met je normale radiostem. Houd <kbd>Spatie</kbd> of de knop ingedrukt — laat los als je klaar bent.',
+      label:    isEN ? 'Read aloud' : 'Lees hardop voor',
+      // Standaardzin met OIP-jargon zodat we ook jargon-herkenning testen
+      sentence: isEN
+        ? 'Operator to control room: visual on the VRU absorber, levels nominal, performing LMRA before opening the valve.'
+        : 'Operator aan controlekamer: zicht op de VRU-absorber, niveaus nominaal, ik voer een LMRA uit voor ik de afsluiter open.',
+      btnIdle:    isEN ? 'Hold to speak' : 'Houd vast om te spreken',
+      btnRec:     isEN ? 'Release when done' : 'Loslaten als je klaar bent',
+      btnProc:    isEN ? 'Processing…' : 'Verwerken…',
+      ready:      isEN ? 'Ready when you are.' : 'Klaar wanneer jij dat bent.',
+      recording:  isEN ? 'Recording…' : 'Opname loopt…',
+      processing: isEN ? 'Sending to Whisper…' : 'Versturen naar Whisper…',
+      tooShort:   isEN ? 'Too short — try again with a full sentence.' : 'Te kort — probeer opnieuw met een volledige zin.',
+      ok:         isEN ? 'Microphone working' : 'Microfoon werkt',
+      okDetail:   isEN
+        ? 'Whisper transcribed your speech successfully. You\'ll hear the AI roles respond when you press send.'
+        : 'Whisper heeft je spraak succesvol getranscribeerd. De AI-rollen reageren zodra je een bericht verstuurt.',
+      partial:    isEN ? 'Partial match' : 'Gedeeltelijke match',
+      partialDetail: isEN
+        ? 'Whisper picked up your voice but the transcription differs from the expected sentence. This can happen with background noise, accents, or jargon. Try again or proceed if this is acceptable.'
+        : 'Whisper heeft je spraak opgepakt maar de transcriptie wijkt af van de verwachte zin. Dit kan komen door achtergrondgeluid, accent of vakjargon. Probeer opnieuw of ga door als dit acceptabel is.',
+      errorTitle: isEN ? 'Voice test failed' : 'Spraaktest mislukt',
+      errorDetail: isEN
+        ? 'There was a problem with the microphone or the transcription service. You can still type your responses during the scenario.'
+        : 'Er was een probleem met de microfoon of de transcriptie-service. Je kunt nog steeds typen tijdens het scenario.',
+      skip:       isEN ? 'Skip · start now' : 'Overslaan · direct beginnen',
+      retry:      isEN ? '↺ Try again' : '↺ Opnieuw',
+      cont:       isEN ? 'Start scenario →' : 'Start scenario →',
+    };
+
+    document.getElementById('rc-title').textContent = T.title;
+    document.getElementById('rc-intro').innerHTML = T.intro;
+    document.getElementById('rc-prompt-label').textContent = T.label;
+    document.getElementById('rc-prompt-text').textContent = T.sentence;
+    micLabel.textContent = T.btnIdle;
+    statusEl.textContent = T.ready;
+    skipBtn.textContent = T.skip;
+    retryBtn.textContent = T.retry;
+    continueBtn.textContent = T.cont;
+
+    // Bouw meter-balken
+    if (meter && !meter.children.length) {
+      for (let i = 0; i < 24; i++) {
+        const b = document.createElement('div');
+        b.className = 'rc-bar';
+        meter.appendChild(b);
+      }
+    }
+
+    // Maak een aparte VoiceInput-instance voor de check, met de testzin als prompt-hint
+    const checkVoice = new InlineVoiceInput({
+      endpoint: voiceInput.endpoint,
+      language: effL,
+      // Geef Whisper de testzin mee als hint — vergelijkbaar met scenariocontext
+      prompt: T.sentence + ' ' + (VOICE_CONFIG.basePrompt || ''),
+      audioLevelCallback: lvl => {
+        if (!meter) return;
+        const bars = meter.children;
+        const active = Math.min(bars.length, Math.round(lvl * bars.length * 2.5));
+        for (let i = 0; i < bars.length; i++) {
+          bars[i].className = 'rc-bar';
+          if (i < active) {
+            if (i >= bars.length - 3) bars[i].classList.add('on-peak');
+            else if (i >= bars.length - 6) bars[i].classList.add('on-hi');
+            else bars[i].classList.add('on');
+          }
+        }
+      },
+      onStateChange: state => {
+        micBtn.classList.remove('is-recording', 'is-processing');
+        if (state === 'recording') {
+          micBtn.classList.add('is-recording');
+          micLabel.textContent = T.btnRec;
+          statusEl.textContent = T.recording;
+        } else if (state === 'processing') {
+          micBtn.classList.add('is-processing');
+          micLabel.textContent = T.btnProc;
+          statusEl.textContent = T.processing;
+        } else {
+          micLabel.textContent = T.btnIdle;
+          // Reset meter
+          if (meter) Array.from(meter.children).forEach(b => b.className = 'rc-bar');
+        }
+      },
+      onTranscript: text => {
+        showRadioCheckResult(text, T);
+      },
+      onError: err => {
+        showRadioCheckError(err, T);
+      },
+    });
+
+    // Push-to-talk events op de mic-button
+    let downActive = false;
+    const onDown = e => {
+      e.preventDefault();
+      if (micBtn.disabled || checkVoice.state !== 'idle') return;
+      downActive = true;
+      checkVoice.start();
+    };
+    const onUp = e => {
+      if (!downActive) return;
+      downActive = false;
+      if (checkVoice.state === 'recording') checkVoice.stop();
+    };
+    micBtn.addEventListener('pointerdown', onDown);
+    micBtn.addEventListener('pointerup', onUp);
+    micBtn.addEventListener('pointerleave', onUp);
+    micBtn.addEventListener('pointercancel', onUp);
+
+    // Ook spatiebalk binnen de modal ondersteunen
+    let spaceDown = false;
+    const onKeyDown = e => {
+      if (e.code !== 'Space' || e.repeat) return;
+      if (!overlay.classList.contains('active')) return;
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      if (checkVoice.state !== 'idle') return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (!spaceDown) {
+        spaceDown = true;
+        checkVoice.start();
+      }
+    };
+    const onKeyUp = e => {
+      if (e.code !== 'Space') return;
+      if (!overlay.classList.contains('active')) return;
+      if (spaceDown) { e.preventDefault(); e.stopPropagation(); }
+      if (!spaceDown) return;
+      spaceDown = false;
+      if (checkVoice.state === 'recording') checkVoice.stop();
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    document.addEventListener('keyup', onKeyUp, true);
+
+    // Resultaat-rendering
+    function showRadioCheckResult(transcript, T) {
+      stepRecord.classList.remove('active');
+      stepResult.classList.add('active');
+
+      const expected = T.sentence;
+      const matchScore = computeWordOverlap(transcript, expected);
+      const isOk = matchScore >= 0.4 && transcript.trim().split(/\s+/).length >= 4;
+
+      const box = document.getElementById('rc-result-box');
+      const icon = document.getElementById('rc-result-icon');
+      const title = document.getElementById('rc-result-title');
+      const tr = document.getElementById('rc-transcript');
+      const detail = document.getElementById('rc-result-detail');
+
+      box.classList.remove('ok', 'warn');
+      if (isOk) {
+        box.classList.add('ok');
+        icon.textContent = '✓';
+        title.textContent = T.ok;
+        detail.textContent = T.okDetail;
+      } else {
+        box.classList.add('warn');
+        icon.textContent = '!';
+        title.textContent = T.partial;
+        detail.textContent = T.partialDetail;
+      }
+      tr.textContent = '"' + (transcript || '—') + '"';
+
+      retryBtn.style.display = 'inline-block';
+      continueBtn.disabled = false;
+    }
+
+    function showRadioCheckError(err, T) {
+      stepRecord.classList.remove('active');
+      stepResult.classList.add('active');
+
+      const box = document.getElementById('rc-result-box');
+      const icon = document.getElementById('rc-result-icon');
+      const title = document.getElementById('rc-result-title');
+      const tr = document.getElementById('rc-transcript');
+      const detail = document.getElementById('rc-result-detail');
+
+      box.classList.remove('ok');
+      box.classList.add('warn');
+      icon.textContent = '⚠';
+      title.textContent = T.errorTitle;
+      tr.textContent = err?.message || err?.type || '—';
+      detail.textContent = T.errorDetail;
+
+      retryBtn.style.display = 'inline-block';
+      continueBtn.disabled = false;
+    }
+
+    function reset() {
+      stepResult.classList.remove('active');
+      stepRecord.classList.add('active');
+      retryBtn.style.display = 'none';
+      continueBtn.disabled = true;
+      statusEl.textContent = T.ready;
+      if (meter) Array.from(meter.children).forEach(b => b.className = 'rc-bar');
+    }
+
+    function close(markDone) {
+      overlay.classList.remove('active');
+      micBtn.removeEventListener('pointerdown', onDown);
+      micBtn.removeEventListener('pointerup', onUp);
+      micBtn.removeEventListener('pointerleave', onUp);
+      micBtn.removeEventListener('pointercancel', onUp);
+      document.removeEventListener('keydown', onKeyDown, true);
+      document.removeEventListener('keyup', onKeyUp, true);
+      // Cleanup: stop eventueel nog lopende opname
+      if (checkVoice.state === 'recording') {
+        try { checkVoice.cancel(); } catch (_) {}
+      }
+      if (markDone) {
+        try { localStorage.setItem('oip-radiocheck-done', '1'); } catch (_) {}
+      }
+      resolve();
+    }
+
+    retryBtn.addEventListener('click', reset);
+    skipBtn.addEventListener('click', () => close(true));
+    continueBtn.addEventListener('click', () => close(true));
+
+    // Tonen!
+    overlay.classList.add('active');
+  });
+}
+
+// Eenvoudige overlap-score: welk percentage van de woorden in 'expected' staat ook in 'actual'?
+// Genoeg voor een ja/nee-oordeel — perfect-match is niet nodig (Whisper hoort soms iets anders bij jargon).
+function computeWordOverlap(actual, expected) {
+  if (!actual || !expected) return 0;
+  const norm = s => s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').split(/\s+/).filter(w => w.length > 2);
+  const a = new Set(norm(actual));
+  const e = norm(expected);
+  if (!e.length) return 0;
+  let hits = 0;
+  for (const w of e) if (a.has(w)) hits++;
+  return hits / e.length;
 }
 
 // Eenmalige uitleg-banner voor spatiebalk-PTT (plus muis-optie)
