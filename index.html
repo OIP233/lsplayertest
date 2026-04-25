@@ -3390,24 +3390,30 @@ class InlineVoiceInput {
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       });
 
-      // Kies een ondersteund mime-type (browser-afhankelijk)
+      // Kies een ondersteund mime-type (browser-afhankelijk).
+      // Volgorde belangrijk: kale 'audio/webm' zonder codec-clausule eerst,
+      // omdat sommige Whisper-wrappers struikelen over de codec-suffix.
+      // Voor Edge/Chrome werkt mp4 vaak beter dan webm.
       const candidates = [
-        'audio/webm;codecs=opus',
-        'audio/webm',
-        'audio/ogg;codecs=opus',
-        'audio/mp4',
-        '',
+        'audio/mp4',                  // Edge/Safari/iOS
+        'audio/webm',                 // Chrome/Firefox (zonder codec-suffix)
+        'audio/webm;codecs=opus',     // Chrome/Firefox (expliciet)
+        'audio/ogg;codecs=opus',      // Firefox legacy
+        'audio/mpeg',                 // zelden, maar volledig ondersteund
+        '',                           // browser-default (laatste redmiddel)
       ];
       let mimeType = '';
       for (const t of candidates) {
-        if (!t || (window.MediaRecorder && MediaRecorder.isTypeSupported(t))) {
+        if (!t) { mimeType = ''; break; }
+        if (window.MediaRecorder && MediaRecorder.isTypeSupported(t)) {
           mimeType = t;
           break;
         }
       }
+      console.log('[OIP voice] Using mimeType:', mimeType || '(browser default)');
 
       this.mediaRecorder = mimeType
-        ? new MediaRecorder(this.stream, { mimeType })
+        ? new MediaRecorder(this.stream, { mimeType, audioBitsPerSecond: 96000 })
         : new MediaRecorder(this.stream);
       this.chunks = [];
       this.mediaRecorder.addEventListener('dataavailable', e => {
@@ -3474,8 +3480,8 @@ class InlineVoiceInput {
     this.chunks = [];
     this._cleanup();
 
-    // Erg korte opname (<300 ms) of erg klein blob? Waarschijnlijk per ongeluk — niet versturen
-    if (duration < 300 || blob.size < 500) {
+    // Erg korte opname (<500 ms) of erg klein blob? Waarschijnlijk per ongeluk — niet versturen
+    if (duration < 500 || blob.size < 1500) {
       console.log('[OIP voice] Recording too short, ignoring (dur=' + duration + 'ms, size=' + blob.size + ')');
       this._setState('idle');
       return;
@@ -3484,8 +3490,13 @@ class InlineVoiceInput {
     this._setState('processing');
     try {
       const text = await this._transcribe(blob);
-      if (text && text.trim()) {
-        this.onTranscript?.(text.trim());
+      const trimmed = (text || '').trim();
+      // Whisper-hallucinaties bij stilte filteren — typische uitkomsten bij geen of zeer zachte audio:
+      // "nl", "en", "Bedankt voor het kijken.", "Thanks for watching.", "Ondertiteld door...", etc.
+      if (trimmed && !InlineVoiceInput._isHallucination(trimmed)) {
+        this.onTranscript?.(trimmed);
+      } else if (trimmed) {
+        console.log('[OIP voice] Hallucination/silence-artefact verworpen:', trimmed);
       } else {
         console.log('[OIP voice] Empty transcript');
       }
@@ -3497,28 +3508,73 @@ class InlineVoiceInput {
     }
   }
 
+  // Whisper produceert bij stilte (of erg zachte audio) typische artefact-strings.
+  // We filteren die uit zodat het invoerveld niet vervuilt raakt.
+  static _isHallucination(text) {
+    if (!text) return true;
+    const t = text.trim().toLowerCase();
+    // Heel kort (1-2 letters): vrijwel zeker een taalcode-hallucination zoals "nl", "en", "de"
+    if (t.length <= 3) return true;
+    // Bekende stilte-artefacten in meerdere talen
+    const patterns = [
+      /^bedankt voor (het )?kijken\.?$/,
+      /^thanks for watching\.?$/,
+      /^thank you( for watching)?\.?$/,
+      /^untertitelung des zdf für funk.*$/,
+      /^untertitel.*$/,
+      /^ondertiteld door.*$/,
+      /^sous-titres.*$/,
+      /^subtítulos.*$/,
+      /^napisy.*$/,
+      /^\.+$/,
+      /^you\.?$/,
+      /^hi\.?$/,
+      /^bye\.?$/,
+    ];
+    return patterns.some(rx => rx.test(t));
+  }
+
   async _transcribe(blob) {
     const t = blob.type || 'audio/webm';
+
+    // Bestandsextensie afleiden uit mime-type — Whisper gebruikt deze om het formaat te herkennen
+    let ext = 'webm';
+    if (t.includes('mp4'))      ext = 'mp4';
+    else if (t.includes('mpeg')) ext = 'mp3';
+    else if (t.includes('mpga')) ext = 'mp3';
+    else if (t.includes('ogg'))  ext = 'ogg';
+    else if (t.includes('wav'))  ext = 'wav';
+    else if (t.includes('webm')) ext = 'webm';
+    else if (t.includes('flac')) ext = 'flac';
+
+    const filename = `recording.${ext}`;
+
     console.log('[OIP voice] POST → ' + this.endpoint +
                 ' · audio: ' + Math.round(blob.size/1024) + ' KB · ' + t +
-                ' · lang: ' + this.language);
+                ' · file: ' + filename + ' · lang: ' + this.language);
 
-    // Audio naar base64 converteren (jouw Netlify-functie verwacht JSON, geen multipart)
+    // Audio naar base64 converteren
     const base64 = await InlineVoiceInput._blobToBase64(blob);
 
-    // Probeer eerst JSON-base64 (meest gangbaar voor Netlify Whisper-wrappers).
-    // Verschillende veldnamen tegelijk meesturen voor maximale compatibiliteit.
+    // Stuur expliciete filename + format mee zodat de server het correct doorgeeft aan Whisper.
+    // Verschillende veldnamen tegelijk voor maximale compatibiliteit met de Netlify-functie.
     const payload = {
-      audio:    base64,         // pure base64 string (zonder data:-prefix)
-      file:     base64,         // alias
-      data:     base64,         // alias
-      audioBase64: base64,      // alias
-      mimeType: t,
-      mime_type: t,
-      format:   t.includes('mp4') ? 'm4a' : t.includes('ogg') ? 'ogg' : 'webm',
-      language: this.language,
-      prompt:   this.prompt,
-      model:    'whisper-1',
+      audio:       base64,
+      file:        base64,
+      data:        base64,
+      audioBase64: base64,
+      mimeType:    t,
+      mime_type:   t,
+      contentType: t,
+      content_type: t,
+      format:      ext,
+      extension:   ext,
+      filename:    filename,
+      file_name:   filename,
+      name:        filename,
+      language:    this.language,
+      prompt:      this.prompt,
+      model:       'whisper-1',
     };
 
     let res;
