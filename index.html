@@ -4078,27 +4078,35 @@ function buildVoiceMeter() {
 // echt begint. Zo geen onnodige stress als de mic-instellingen niet kloppen.
 
 async function maybeRunRadioCheck() {
-  if (!voiceReady) return;  // geen voice-module → geen check
-  if (!VOICE_CONFIG.enabled) return;
+  if (!VOICE_CONFIG.enabled) {
+    console.log('[OIP radiocheck] Skipped: voice disabled in config');
+    return;
+  }
+  if (!voiceReady) {
+    console.log('[OIP radiocheck] Skipped: voice module not ready (voiceReady=false). ' +
+                'Check that microphone permission is granted and the deployment is reachable.');
+    return;
+  }
 
   let alreadyDone = false;
   try { alreadyDone = localStorage.getItem('oip-radiocheck-done') === '1'; } catch (_) {}
-  if (alreadyDone) return;
+  if (alreadyDone) {
+    console.log('[OIP radiocheck] Skipped: already completed in a previous session. ' +
+                'Run `localStorage.removeItem("oip-radiocheck-done")` and reload to see it again.');
+    return;
+  }
 
+  console.log('[OIP radiocheck] Showing radio-check modal.');
   return runRadioCheck();
 }
 
-// Volledige vertalingen voor alle door de player ondersteunde talen.
-// De testzin bevat per taal tankterminal/proces-jargon zodat we tegelijk testen
-// of Whisper het vakjargon correct oppikt — dat geeft een eerlijker beeld dan
-// een neutrale "the quick brown fox"-zin.
 function pickRadioCheckTexts(effL) {
   const texts = {
     en: {
       title:    'Radio check — microphone test',
       intro:    'Before we begin, a quick microphone test. <strong>Read the line below out loud</strong> at your normal radio voice. Hold <kbd>Space</kbd> or the button — release when done.',
       label:    'Read aloud',
-      sentence: 'Operator to control room: visual on the VRU absorber, levels nominal, performing LMRA before opening the valve.',
+      sentence: 'This is the control room, no active alarms. Start your control round, field operator. And contractor, remember the LMRA.',
       btnIdle:    'Hold to speak',
       btnRec:     'Release when done',
       btnProc:    'Processing…',
@@ -4119,7 +4127,7 @@ function pickRadioCheckTexts(effL) {
       title:    'Radio check — microfoontest',
       intro:    'Voordat we beginnen, een korte microfoontest. <strong>Lees de zin hieronder hardop voor</strong> met je normale radiostem. Houd <kbd>Spatie</kbd> of de knop ingedrukt — laat los als je klaar bent.',
       label:    'Lees hardop voor',
-      sentence: 'Operator aan controlekamer: zicht op de VRU-absorber, niveaus nominaal, ik voer een LMRA uit voor ik de afsluiter open.',
+      sentence: 'Hier de controlekamer, geen alarmen actief. Start je controleronde veldoperator. En contractor, denk aan de LMRA.',
       btnIdle:    'Houd vast om te spreken',
       btnRec:     'Loslaten als je klaar bent',
       btnProc:    'Verwerken…',
@@ -4140,7 +4148,7 @@ function pickRadioCheckTexts(effL) {
       title:    'Funkprobe — Mikrofontest',
       intro:    'Bevor wir beginnen, eine kurze Mikrofonprüfung. <strong>Lesen Sie den Satz unten laut vor</strong> mit Ihrer normalen Funkstimme. Halten Sie <kbd>Leertaste</kbd> oder die Taste gedrückt — loslassen, wenn Sie fertig sind.',
       label:    'Vorlesen',
-      sentence: 'Operator an Leitwarte: Sicht auf den VRU-Absorber, Werte im Nominalbereich, ich führe eine LMRA durch, bevor ich das Ventil öffne.',
+      sentence: 'Hier ist die Leitwarte, keine aktiven Alarme. Beginne deinen Kontrollgang, Feldoperator. Und Kontraktor, denk an die LMRA.',
       btnIdle:    'Zum Sprechen halten',
       btnRec:     'Loslassen wenn fertig',
       btnProc:    'Verarbeite…',
@@ -4161,7 +4169,7 @@ function pickRadioCheckTexts(effL) {
       title:    'Prueba de radio — test de micrófono',
       intro:    'Antes de empezar, una breve prueba de micrófono. <strong>Lee la frase de abajo en voz alta</strong> con tu voz de radio normal. Mantén pulsada la tecla <kbd>Espacio</kbd> o el botón — suelta cuando termines.',
       label:    'Lee en voz alta',
-      sentence: 'Operador a sala de control: visual en el absorbedor VRU, niveles nominales, realizando LMRA antes de abrir la válvula.',
+      sentence: 'Aquí sala de control, sin alarmas activas. Inicia tu ronda de control, operador de campo. Y contratista, recuerda el LMRA.',
       btnIdle:    'Mantén pulsado para hablar',
       btnRec:     'Suelta cuando termines',
       btnProc:    'Procesando…',
@@ -4182,7 +4190,7 @@ function pickRadioCheckTexts(effL) {
       title:    'Contrôle radio — test du micro',
       intro:    'Avant de commencer, un rapide test de micro. <strong>Lisez la phrase ci-dessous à voix haute</strong> avec votre voix radio normale. Maintenez la touche <kbd>Espace</kbd> ou le bouton enfoncé — relâchez quand vous avez terminé.',
       label:    'Lire à voix haute',
-      sentence: 'Opérateur à la salle de contrôle : vue sur l\'absorbeur VRU, niveaux nominaux, je réalise une LMRA avant d\'ouvrir la vanne.',
+      sentence: 'Ici la salle de contrôle, aucune alarme active. Commence ta ronde de contrôle, opérateur de terrain. Et entrepreneur, n\'oublie pas la LMRA.',
       btnIdle:    'Maintenir pour parler',
       btnRec:     'Relâcher une fois fini',
       btnProc:    'Traitement…',
@@ -4203,7 +4211,7 @@ function pickRadioCheckTexts(effL) {
       title:    'Test radia — sprawdzenie mikrofonu',
       intro:    'Zanim zaczniemy, krótki test mikrofonu. <strong>Przeczytaj zdanie poniżej na głos</strong> normalnym tonem do radia. Przytrzymaj <kbd>Spację</kbd> lub przycisk — puść, gdy skończysz.',
       label:    'Przeczytaj na głos',
-      sentence: 'Operator do sterowni: widok na absorber VRU, poziomy nominalne, wykonuję LMRA przed otwarciem zaworu.',
+      sentence: 'Tu sterownia, brak aktywnych alarmów. Rozpocznij swój obchód kontrolny, operatorze terenowy. A kontraktor, pamiętaj o LMRA.',
       btnIdle:    'Przytrzymaj, aby mówić',
       btnRec:     'Zwolnij, gdy skończysz',
       btnProc:    'Przetwarzanie…',
@@ -4450,6 +4458,20 @@ function computeWordOverlap(actual, expected) {
   for (const w of e) if (a.has(w)) hits++;
   return hits / e.length;
 }
+
+// Globale helpers — op window zodat je ze vanuit de browser-console kunt aanroepen.
+// Handig voor demo's, nieuwe deelnemers op dezelfde computer, of testen.
+window.resetRadioCheck = function() {
+  try { localStorage.removeItem('oip-radiocheck-done'); } catch (_) {}
+  console.log('[OIP radiocheck] Reset — modal verschijnt weer bij volgende scenario-start.');
+};
+window.runRadioCheckNow = function() {
+  if (!voiceReady) {
+    console.warn('[OIP radiocheck] Cannot run: voice module not ready. Start a scenario first so the mic is initialised.');
+    return;
+  }
+  return runRadioCheck();
+};
 
 // Eenmalige uitleg-banner voor spatiebalk-PTT (plus muis-optie)
 function showVoiceTip() {
