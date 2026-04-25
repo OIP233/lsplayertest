@@ -3441,7 +3441,7 @@ function setJsonStatus(type, msg) {
 // ═══════════════════════════════════════════════════════════════
 // START
 // ═══════════════════════════════════════════════════════════════
-function startScenario() {
+async function startScenario() {
   if (!apiKey) {
     const manualKey = document.getElementById('api-key-input')?.value.trim() || '';
     if (!manualKey || !manualKey.startsWith('sk-ant')) {
@@ -3458,6 +3458,17 @@ function startScenario() {
 
   getAudioCtx();
 
+  // Verberg het intro-paneel meteen — de operator weet dat het scenario gaat starten
+  document.getElementById('intro').classList.remove('visible');
+
+  // ── RADIOCHECK VOLGORDE ─────────────────────────────────────────────
+  // Eerst voice-module laden (mic-permissie, endpoint-check). Dan de radiocheck
+  // afwerken indien nodig. Pas DAARNA Storyline laden + boot-sequence + scenario.
+  // Dit voorkomt dat de Storyline-presentatie en de briefing-timer al beginnen
+  // terwijl de deelnemer nog zijn microfoon test.
+  await initVoiceInput();
+  await maybeRunRadioCheck();
+
   // Storyline iframe laden — briefing URL heeft voorrang op fase 1 URL
   const briefingUrl = scenarioConfig?.aiScenario?.briefing?.slideUrl?.trim() || '';
   const fase1Url    = scenarioConfig?.aiScenario?.phases?.[0]?.slideUrl?.trim()
@@ -3473,7 +3484,6 @@ function startScenario() {
     ph.style.display = 'none';
   }
 
-  document.getElementById('intro').classList.remove('visible');
   runBootSequence();
 }
 
@@ -3637,20 +3647,14 @@ async function initScenario() {
   }
   renderPhaseControls();
 
-  // Voice module initialiseren (await zodat radiocheck weet of voiceReady true is)
-  await initVoiceInput();
-
-  // Radio check vóór scenario-start (alleen eerste keer of expliciet teruggevraagd)
-  // Briefing/phase-timers starten pas ná de radiocheck zodat de tijd niet wegtikt
-  // terwijl de deelnemer zijn microfoon test.
-  await maybeRunRadioCheck();
-
   if (hasBriefing) {
     startBriefingTimer(briefingCfg.dur || 120);
   } else {
     startPhaseTimers();
   }
 
+  // Voice-module en radiocheck zijn al afgehandeld in startScenario(),
+  // vóór de boot-sequence en het laden van de Storyline.
   callClaude('START', true);
 }
 
