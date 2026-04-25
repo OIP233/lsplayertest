@@ -1150,6 +1150,67 @@ html, body {
   text-transform: none;
 }
 
+/* ── PROCESSING TICKER (lichtkrant tijdens transcriptie) ─── */
+/* Verschijnt alleen tijdens 'processing'-state, geeft de operator een
+   alertheids-tip te lezen terwijl Whisper de audio verwerkt. Stijl: strak,
+   amber, monospace — past bij een echte controlekamer-LED-ticker. */
+#voice-ticker {
+  display: none;
+  height: 26px;
+  overflow: hidden;
+  position: relative;
+  background: var(--bg);
+  border: 1px solid var(--amber);
+  border-radius: 3px;
+  margin-top: 6px;
+}
+#voice-ticker.active { display: block; }
+#voice-ticker::before,
+#voice-ticker::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 24px;
+  z-index: 2;
+  pointer-events: none;
+}
+#voice-ticker::before {
+  left: 0;
+  background: linear-gradient(to right, var(--bg), transparent);
+}
+#voice-ticker::after {
+  right: 0;
+  background: linear-gradient(to left, var(--bg), transparent);
+}
+#voice-ticker .vt-track {
+  position: absolute;
+  top: 0; bottom: 0;
+  left: 100%;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 1px;
+  color: var(--amber);
+  text-shadow: 0 0 4px rgba(255, 165, 0, 0.4);
+  padding-left: 16px;
+  animation: vt-scroll 14s linear infinite;
+}
+#voice-ticker .vt-track .vt-msg::before {
+  content: '◉';
+  margin-right: 10px;
+  opacity: 0.6;
+}
+#voice-ticker .vt-track .vt-msg {
+  margin-right: 60px;
+}
+@keyframes vt-scroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-100%); }
+}
+
 /* ── RIGHT: RADIO PANEL — tabbladen ──────────────── */
 #radio-panel {
   display: flex;
@@ -2279,6 +2340,9 @@ body.light .msg.sys .msg-bub { color: var(--text-dim); }
           <span id="vs-label">Recording…</span>
           <div class="vs-meter" id="vs-meter"></div>
           <span class="vs-time" id="vs-time">00:00</span>
+        </div>
+        <div id="voice-ticker">
+          <div class="vt-track" id="vt-track"></div>
         </div>
         <textarea id="user-input-large"
           placeholder="Type your response as operator... (Enter to send, Shift+Enter for new line)"
@@ -4604,6 +4668,7 @@ function handleVoiceStateChange(state) {
     if (lbl) lbl.textContent = lang === 'en' ? 'Recording…' : 'Opname actief…';
     setVoicePttLabel(lang === 'en' ? 'Release to send' : 'Laat los om te versturen');
     startVoicePttTimer();
+    hideVoiceTicker();
   } else if (state === 'processing') {
     btn.classList.add('is-processing');
     bar.classList.add('active', 'processing');
@@ -4611,11 +4676,95 @@ function handleVoiceStateChange(state) {
     setVoicePttLabel(lang === 'en' ? 'Processing…' : 'Verwerken…');
     stopVoicePttTimer();
     updateVoiceMeter(0);
+    showVoiceTicker();
   } else {
     setVoicePttLabel(lang === 'en' ? 'Hold to speak' : 'Houd vast om te spreken');
     stopVoicePttTimer();
     updateVoiceMeter(0);
+    hideVoiceTicker();
   }
+}
+
+// ─── Lichtkrant tijdens transcriptie-verwerking ─────────────────────────
+// Vijf alertheids-meldingen die scrollen tijdens het wachten op Whisper.
+// Hergebruikt scenariotaal via getEffectiveLang().
+const VOICE_TICKER_MESSAGES = {
+  en: [
+    'Keep checking your alarms — stay alert.',
+    'Don\'t fixate on one screen — scan all monitors.',
+    'Field operator status — when did you last hear from them?',
+    'Logbook — note what you observe.',
+    'Anticipate, don\'t only react.',
+  ],
+  nl: [
+    'Blijf je alarmen controleren — blijf alert.',
+    'Fixeer niet op één scherm — scan alle monitoren.',
+    'Veldoperator-status — wanneer hoorde je voor het laatst iets?',
+    'Logboek — noteer wat je waarneemt.',
+    'Anticipeer, reageer niet alleen.',
+  ],
+  de: [
+    'Prüfe weiterhin deine Alarme — bleib aufmerksam.',
+    'Fixiere dich nicht auf einen Bildschirm — scanne alle Monitore.',
+    'Feldoperator-Status — wann hast du zuletzt von ihm gehört?',
+    'Logbuch — notiere was du beobachtest.',
+    'Antizipiere, reagiere nicht nur.',
+  ],
+  es: [
+    'Sigue revisando tus alarmas — mantente alerta.',
+    'No te fijes en una sola pantalla — escanea todos los monitores.',
+    'Estado del operador de campo — ¿cuándo lo oíste por última vez?',
+    'Libro de registro — anota lo que observas.',
+    'Anticipa, no solo reacciones.',
+  ],
+  fr: [
+    'Continue de vérifier tes alarmes — reste vigilant.',
+    'Ne te fixe pas sur un écran — scanne tous les moniteurs.',
+    'Statut de l\'opérateur de terrain — quand l\'as-tu entendu pour la dernière fois ?',
+    'Journal de bord — note ce que tu observes.',
+    'Anticipe, ne fais pas que réagir.',
+  ],
+  pl: [
+    'Sprawdzaj dalej swoje alarmy — zachowaj czujność.',
+    'Nie skupiaj się na jednym ekranie — skanuj wszystkie monitory.',
+    'Status operatora terenowego — kiedy ostatnio coś od niego słyszałeś?',
+    'Dziennik — zapisuj co obserwujesz.',
+    'Przewiduj, nie tylko reaguj.',
+  ],
+};
+
+function showVoiceTicker() {
+  const ticker = document.getElementById('voice-ticker');
+  const track  = document.getElementById('vt-track');
+  if (!ticker || !track) return;
+
+  const effL = getEffectiveLang();
+  const msgs = VOICE_TICKER_MESSAGES[effL] || VOICE_TICKER_MESSAGES.en;
+
+  // Bouw de track: alle berichten één keer achter elkaar.
+  // De CSS-animatie scrollt de hele track door — als de processing kort duurt
+  // ziet de operator één bericht; bij langere verwerking rouleren ze.
+  track.innerHTML = msgs.map(m => `<span class="vt-msg">${escapeTickerHtml(m)}</span>`).join('');
+
+  // Reset de animatie zodat hij elke keer vanaf rechts opnieuw begint
+  track.style.animation = 'none';
+  // Force reflow zodat de browser de animation-reset oppikt
+  void track.offsetWidth;
+  track.style.animation = '';
+
+  ticker.classList.add('active');
+}
+
+function hideVoiceTicker() {
+  const ticker = document.getElementById('voice-ticker');
+  if (ticker) ticker.classList.remove('active');
+}
+
+function escapeTickerHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 function handleVoiceTranscript(text) {
