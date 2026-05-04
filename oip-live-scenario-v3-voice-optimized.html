@@ -5682,6 +5682,15 @@ function handlePhaseTransition(phaseNum) {
     startPhaseTimerDisplay(idx);
     const label = phases[idx]?.label || `Fase ${phaseNum}`;
     addAlarm('inf', lang==='en'?`PHASE ${phaseNum}`:`FASE ${phaseNum}`, label, '');
+
+    // Auto-trigger eerste radiobericht voor fase 1 na briefing-overgang.
+    // Reden: parseAndDisplay snapshot 'inBriefing' aan het begin van een
+    // AI-response, waardoor operationele rolregels in dezelfde beurt als
+    // [FASE:1] worden weggefilterd. Daarom triggeren we hier een aparte
+    // vervolg-AI-call, zodra de briefing-state daadwerkelijk gesloten is.
+    firstResponseReceived = true;
+    const phase1OpenPrompt = `PHASE 1 OPEN: The briefing has just ended and phase 1 is now active. Based on the phase 1 direction, open the phase with one operational radio signal from the appropriate role (one or two short sentences). Optionally include one DCS system message if it fits the phase 1 direction. Do NOT send [FASE:1] again — phase 1 is already active. Then wait for the operator's response.`;
+    setTimeout(() => callClaude(phase1OpenPrompt, false), 500);
     return;
   }
 
