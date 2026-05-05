@@ -1259,18 +1259,87 @@ html, body {
 /* Tab inhoud */
 .tab-content { display: none; flex: 1; flex-direction: column; overflow: hidden; }
 .tab-content.active { display: flex; }
-#tab-content-radio { overflow: hidden; }
+#tab-content-radio { overflow: hidden; position: relative; }
 
 #messages {
   flex: 1;
   overflow-y: auto;
-  padding: 14px 16px;
+  /* Iets extra padding-bottom: ruimte voor glow + translateY entry-offset
+     zodat een net binnengekomen bericht nooit half onder de rand blijft. */
+  padding: 14px 16px 22px;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  scroll-behavior: smooth;
+  overscroll-behavior: contain;
 }
 #messages::-webkit-scrollbar { width:4px; }
 #messages::-webkit-scrollbar-thumb { background:var(--border-hi); }
+
+/* ── "Nieuw bericht" floating pill ──────────────────────────────
+   Verschijnt alleen wanneer de gebruiker zelf omhoog gescrold is
+   en er nieuwe berichten binnenkomen. Klik = scroll naar onder. */
+#new-msg-pill {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%) translateY(14px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--cyan-dim);
+  color: var(--cyan);
+  border: 1px solid var(--cyan);
+  padding: 7px 14px 7px 12px;
+  border-radius: 22px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .22s ease, transform .22s ease, background .15s, color .15s;
+  z-index: 6;
+  text-transform: uppercase;
+  box-shadow: 0 4px 18px rgba(0,0,0,.35), 0 0 14px rgba(32,216,255,.25);
+  white-space: nowrap;
+  user-select: none;
+}
+#new-msg-pill.visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(-50%) translateY(0);
+}
+#new-msg-pill:hover {
+  background: var(--cyan);
+  color: var(--bg);
+  box-shadow: 0 4px 22px rgba(32,216,255,.5);
+}
+#new-msg-pill:hover .nm-count {
+  background: var(--bg);
+  color: var(--cyan);
+}
+#new-msg-pill .nm-arrow {
+  font-size: 14px;
+  line-height: 1;
+  animation: nmBounce 1.4s ease-in-out infinite;
+}
+#new-msg-pill .nm-count {
+  background: var(--cyan);
+  color: var(--bg);
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 11px;
+  transition: background .15s, color .15s;
+}
+@keyframes nmBounce {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(2px); }
+}
+body.light #new-msg-pill {
+  box-shadow: 0 4px 18px rgba(0,0,0,.15), 0 0 14px rgba(32,216,255,.3);
+}
 
 /* ── DEBRIEFING TAB ───────────────────────────────── */
 #debrief-export-bar {
@@ -2257,12 +2326,12 @@ body.light .msg.sys .msg-bub { color: var(--text-dim); }
       <span id="unack-count" style="display:none;margin-left:auto;font-family:var(--mono);font-size:10px;
             letter-spacing:1px;background:var(--red-dim);color:var(--red);border:1px solid var(--red);
             border-radius:3px;padding:1px 6px"></span>
-      <div id="alarm-vol-wrap" title="Alarm volume" style="display:flex;align-items:center;gap:5px;margin-left:8px;flex-shrink:0">
-        <span id="alarm-vol-icon" style="font-size:12px;cursor:pointer;user-select:none;opacity:.7" onclick="toggleAlarmMute()">🔔</span>
+      <div id="alarm-vol-wrap" title="Audio volume (alarms · radio · cues)" style="display:flex;align-items:center;gap:5px;margin-left:8px;flex-shrink:0">
+        <span id="alarm-vol-icon" style="font-size:12px;cursor:pointer;user-select:none;opacity:.7" onclick="toggleAlarmMute()" title="Mute / unmute audio">🔔</span>
         <input type="range" id="alarm-vol-slider" min="0" max="100" value="70"
           oninput="setAlarmVolume(this.value)"
           style="width:52px;height:3px;accent-color:var(--cyan);cursor:pointer;opacity:.7"
-          title="Alarm volume"/>
+          title="Audio volume (alarms · radio · cues)"/>
       </div>
     </div>
     <div id="alarm-list"></div>
@@ -2382,6 +2451,11 @@ body.light .msg.sys .msg-bub { color: var(--text-dim); }
     <!-- Tab: Radio -->
     <div id="tab-content-radio" class="tab-content active">
       <div id="messages"></div>
+      <button id="new-msg-pill" type="button" onclick="scrollFeedToBottom(true)">
+        <span class="nm-arrow">▼</span>
+        <span class="nm-text">New message</span>
+        <span class="nm-count">1</span>
+      </button>
       <div id="typing">
         <div class="tdot"></div><div class="tdot"></div><div class="tdot"></div>
       </div>
@@ -3778,19 +3852,29 @@ class InlineVoiceInput {
   async start() {
     if (this.state !== 'idle') return;
     try {
+      // Audio-constraints geoptimaliseerd voor Whisper:
+      // - sampleRate 16 kHz: matcht Whisper's interne sample-rate (geen extra resampling)
+      // - channelCount 1: mono is genoeg voor spraak, halveert upload-grootte
+      // - autoGainControl uit: AGC boost achtergrondgeluid in stilte → meer Whisper-hallucinaties
+      //   Zet weer op true als gebruikers met zwakke microfoons klagen over te zachte opname.
       this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: false,
+          sampleRate: 16000,
+          channelCount: 1,
+        }
       });
 
       // Kies een ondersteund mime-type (browser-afhankelijk).
-      // Volgorde belangrijk: kale 'audio/webm' zonder codec-clausule eerst,
-      // omdat sommige Whisper-wrappers struikelen over de codec-suffix.
-      // Voor Edge/Chrome werkt mp4 vaak beter dan webm.
+      // Volgorde: Opus eerst — efficiëntste spraak-codec, beste resultaat met Whisper.
+      // mp4 (AAC) blijft als fallback voor Safari/iOS waar Opus niet altijd werkt.
       const candidates = [
-        'audio/mp4',                  // Edge/Safari/iOS
-        'audio/webm',                 // Chrome/Firefox (zonder codec-suffix)
-        'audio/webm;codecs=opus',     // Chrome/Firefox (expliciet)
-        'audio/ogg;codecs=opus',      // Firefox legacy
+        'audio/webm;codecs=opus',     // BEST voor spraak (Chrome/Firefox/Edge)
+        'audio/ogg;codecs=opus',      // Firefox-fallback
+        'audio/webm',                 // Chrome zonder expliciete codec
+        'audio/mp4',                  // Safari/iOS
         'audio/mpeg',                 // zelden, maar volledig ondersteund
         '',                           // browser-default (laatste redmiddel)
       ];
@@ -3804,8 +3888,9 @@ class InlineVoiceInput {
       }
       console.log('[OIP voice] Using mimeType:', mimeType || '(browser default)');
 
+      // 32 kbps is ruim voldoende voor spraak; lagere bitrate = kleinere upload = snellere transcriptie.
       this.mediaRecorder = mimeType
-        ? new MediaRecorder(this.stream, { mimeType, audioBitsPerSecond: 96000 })
+        ? new MediaRecorder(this.stream, { mimeType, audioBitsPerSecond: 32000 })
         : new MediaRecorder(this.stream);
       this.chunks = [];
       this.mediaRecorder.addEventListener('dataavailable', e => {
@@ -3945,36 +4030,33 @@ class InlineVoiceInput {
                 ' · audio: ' + Math.round(blob.size/1024) + ' KB · ' + t +
                 ' · file: ' + filename + ' · lang: ' + this.language);
 
-    // Audio naar base64 converteren
-    const base64 = await InlineVoiceInput._blobToBase64(blob);
-
-    // Stuur expliciete filename + format mee zodat de server het correct doorgeeft aan Whisper.
-    // Verschillende veldnamen tegelijk voor maximale compatibiliteit met de Netlify-functie.
-    const payload = {
-      audio:       base64,
-      file:        base64,
-      data:        base64,
-      audioBase64: base64,
-      mimeType:    t,
-      mime_type:   t,
-      contentType: t,
-      content_type: t,
-      format:      ext,
-      extension:   ext,
-      filename:    filename,
-      file_name:   filename,
-      name:        filename,
-      language:    this.language,
-      prompt:      this.prompt,
-      model:       'whisper-1',
-    };
+    // Verstuur als multipart/form-data. Veel sneller dan base64-in-JSON:
+    // - geen ~33% base64-overhead op de upload
+    // - geen JSON parse + base64 decode op de server (proxy kan multipart 1-op-1 doorzetten naar OpenAI)
+    // - matcht het native formaat van OpenAI's /v1/audio/transcriptions endpoint
+    //
+    // BELANGRIJK: stel GEEN 'Content-Type' header in — de browser zet zelf de juiste
+    // multipart-boundary. Een handmatige Content-Type header sloopt de boundary.
+    //
+    // SERVER-NOTE: dit vereist dat je Netlify-functie multipart/form-data accepteert
+    // i.p.v. JSON met base64. Zie de bijgeleverde refactor-tip.
+    const fd = new FormData();
+    fd.append('file', blob, filename);
+    fd.append('language', this.language || '');
+    fd.append('prompt', this.prompt || '');
+    // gpt-4o-mini-transcribe: lagere WER dan whisper-1, vergelijkbare latency,
+    // door OpenAI aanbevolen voor productie. De server kan dit overrulen.
+    fd.append('model', 'gpt-4o-mini-transcribe');
+    // Deterministisch: voorkomt drift tussen identieke opnames
+    fd.append('temperature', '0');
+    fd.append('response_format', 'json');
 
     let res;
     try {
       res = await fetch(this.endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: fd,
+        // GEEN headers — browser zet Content-Type met boundary automatisch
       });
     } catch (e) {
       throw new Error('Network error: ' + (e.message || e));
@@ -4109,23 +4191,75 @@ class InlineVoiceInput {
 }
 
 function buildVoicePrompt() {
-  // Combineer base-vocabulaire met scenario-specifieke termen
-  const parts = [VOICE_CONFIG.basePrompt];
+  // Whisper-prompt-limiet: 224 tokens (~600-900 tekens). We bouwen prioriteits-gebaseerd op:
+  // 1. Rolnamen (komen letterlijk voor in operator-spraak)
+  // 2. Tags uit beginsituatie (T-204, P-12, MS Rosita...)
+  // 3. Tags uit fase-regie en AI-extra (operator zal deze noemen)
+  // 4. Bedrijfsprofiel-specifieke tags (uit gekoppeld profiel)
+  // 5. Generieke fallback-vocab pas als laatste, ALLEEN als er ruimte is
   const sc = scenarioConfig?.aiScenario;
+  const parts = [];
+  const SOFT_LIMIT = 600; // ruim onder de 224-token grens
 
-  // Namen van AI-rollen toevoegen (die worden vaak uitgesproken)
+  // 1. Rolnamen
   const roleNames = (sc?.roles || []).map(r => r?.name).filter(Boolean);
-  if (roleNames.length) {
-    parts.push('Roles: ' + roleNames.join(', ') + '.');
-  }
-  // Deelnemer-naam als relevante context
+  if (roleNames.length) parts.push('Roles: ' + roleNames.join(', ') + '.');
+
+  // 2. Deelnemer-naam
   const pName = scenarioConfig?.participant?.name;
   if (pName) parts.push('Operator: ' + pName + '.');
 
-  // Scenario-titel als extra context (bevat vaak unieke termen)
-  if (sc?.scenarioTitle) parts.push('Scenario: ' + sc.scenarioTitle + '.');
+  // 3. Tags uit beginsituatie + fase-regie + AI-extra
+  // Patronen die operators letterlijk uitspreken:
+  //   - Equipment-tags:  T-204, P-12, V-301, CAM_5
+  //   - Schipnamen:      MS Rosita, MV Hudson
+  //   - Afkortingen:     VRU, DCS, LMRA, ATEX, BRZO
+  //   - Productnamen:    biodiesel, naphtha, methanol (3+ letters, hoofdletter optioneel)
+  const corpus = [
+    sc?.initialSituation || '',
+    sc?.scenarioTitle || '',
+    sc?.description || '',
+    (sc?.phases || []).map(p => (p.label||'') + ' ' + (p.direction||'')).join(' '),
+    sc?.systemPromptExtraRaw?.general || '',
+  ].join(' ');
 
-  return parts.join(' ');
+  const tagPatterns = [
+    /\b[A-Z]{2,5}_?[-_]?\d{1,4}\b/g,   // T-204, CAM_5, P12, V-301
+    /\b(?:MS|MV|MT|FV)\s+[A-Z][a-zA-Z]+\b/g, // MS Rosita, MV Hudson
+    /\b[A-Z]{2,6}\b/g,                  // VRU, DCS, LMRA, BRZO, ATEX (acroniemen)
+  ];
+  const found = new Set();
+  for (const rx of tagPatterns) {
+    const matches = corpus.match(rx) || [];
+    matches.forEach(m => { if (m.length >= 2) found.add(m); });
+  }
+  // Filter veelvoorkomende stop-acroniemen die geen jargon zijn
+  const stopAcr = new Set(['THE','AND','FOR','BUT','NOT','YOU','ARE','WAS','HIS','HER','OK','OFF','ON','NL','EN','DE','ES','FR','IF','IT','OR','AT','TO','BE','IS','AS','AI','UI']);
+  const tags = [...found].filter(t => !stopAcr.has(t.toUpperCase()));
+  if (tags.length) parts.push('Terms: ' + tags.slice(0, 30).join(', ') + '.');
+
+  // 4. Bedrijfsprofiel-tags (als gekoppeld)
+  try {
+    const profileId = sc?.linkedProfileId;
+    if (profileId) {
+      const profiles = JSON.parse(localStorage.getItem('oip_company_profiles_v1') || '[]');
+      const profile = profiles.find(p => p.id === profileId);
+      if (profile?.tags) {
+        const profileTags = profile.tags.slice(0, 200);
+        if (profileTags) parts.push(profileTags);
+      }
+    }
+  } catch (_) { /* localStorage faal stilte ok */ }
+
+  // 5. Generieke fallback-vocab — alleen als we nog veel ruimte over hebben
+  let prompt = parts.join(' ');
+  if (prompt.length < SOFT_LIMIT - 100 && VOICE_CONFIG.basePrompt) {
+    const remaining = SOFT_LIMIT - prompt.length;
+    prompt += ' ' + VOICE_CONFIG.basePrompt.slice(0, remaining);
+  }
+
+  // Hard cap
+  return prompt.slice(0, SOFT_LIMIT).trim();
 }
 
 function buildVoiceMeter() {
@@ -4869,21 +5003,27 @@ function setAlarmVolume(val) {
   alarmMuted  = (alarmVolume === 0);
   const icon = document.getElementById('alarm-vol-icon');
   if (icon) icon.textContent = alarmMuted ? '🔇' : alarmVolume < 0.4 ? '🔉' : '🔔';
+  try { localStorage.setItem('oip_audio_volume', String(Math.round(alarmVolume * 100))); } catch(e) {}
 }
 
 function toggleAlarmMute() {
   const slider = document.getElementById('alarm-vol-slider');
   if (alarmMuted) {
-    alarmVolume = 0.70;
+    // Herstel naar laatst-bekend volume of fallback 70
+    const restored = parseInt(localStorage.getItem('oip_audio_last') || '70', 10) || 70;
+    alarmVolume = restored / 100;
     alarmMuted  = false;
-    if (slider) slider.value = 70;
+    if (slider) slider.value = restored;
   } else {
+    // Onthoud huidige stand vóór muten
+    try { localStorage.setItem('oip_audio_last', String(Math.round(alarmVolume * 100))); } catch(e) {}
     alarmVolume = 0;
     alarmMuted  = true;
     if (slider) slider.value = 0;
   }
   const icon = document.getElementById('alarm-vol-icon');
   if (icon) icon.textContent = alarmMuted ? '🔇' : '🔔';
+  try { localStorage.setItem('oip_audio_volume', String(Math.round(alarmVolume * 100))); } catch(e) {}
 }
 
 // Laagste bouwsteen: speelt één toon met opgegeven golfvorm, harmonics en envelope
@@ -5040,6 +5180,115 @@ function playNudgeSound(type) {
   }
 }
 
+// ── CHAT-FEED CUES (radio squelch, instructor chime, sys blip) ────────────
+// Auditieve trigger bij binnenkomende berichten. Maakt het verschil tussen
+// "ik krijg een chatbericht" en "ik werk in een radioroom". Volgt dezelfde
+// volume- en mute-regels als de alarm-geluiden — één slider stuurt alles.
+
+// Korte ruisburst — basis voor radio squelch geluiden. Niet via playNote
+// (die werkt met oscillators); we gebruiken een AudioBuffer met witte ruis
+// + bandpass-filter om dat typische "clicky" radiokarakter te krijgen.
+function playNoise(ctx, startTime, opts = {}) {
+  const {
+    dur    = 0.04,
+    vol    = 0.20,
+    bpFreq = 2000,
+    bpQ    = 1.2,
+  } = opts;
+
+  const sampleCount = Math.max(1, Math.floor(ctx.sampleRate * dur));
+  const buf  = ctx.createBuffer(1, sampleCount, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < sampleCount; i++) {
+    data[i] = (Math.random() * 2 - 1);
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.setValueAtTime(bpFreq, startTime);
+  bp.Q.setValueAtTime(bpQ, startTime);
+
+  const env = ctx.createGain();
+  const attack = Math.min(0.004, dur * 0.15);
+  env.gain.setValueAtTime(0, startTime);
+  env.gain.linearRampToValueAtTime(vol, startTime + attack);
+  env.gain.exponentialRampToValueAtTime(0.001, startTime + dur);
+
+  src.connect(bp);
+  bp.connect(env);
+  env.connect(ctx.destination);
+  src.start(startTime);
+  src.stop(startTime + dur + 0.02);
+}
+
+// Radio squelch open — wanneer een AI-radiobericht binnenkomt
+function playRadioClickIn() {
+  if (alarmMuted || alarmVolume === 0) return;
+  try {
+    const ctx = getAudioCtx();
+    const now = ctx.currentTime + 0.005;
+    // Twee ruisburst-lagen geven die typische "krrrr·tik" van een PTT-druk
+    playNoise(ctx, now,        { dur:0.030, vol:0.22*alarmVolume, bpFreq:2400, bpQ:1.0 });
+    playNoise(ctx, now + 0.025,{ dur:0.020, vol:0.14*alarmVolume, bpFreq:1600, bpQ:1.5 });
+  } catch(e) {}
+}
+
+// Radio squelch close — wanneer de zin klaar is, PTT loslaten
+function playRadioClickOut() {
+  if (alarmMuted || alarmVolume === 0) return;
+  try {
+    const ctx = getAudioCtx();
+    const now = ctx.currentTime + 0.005;
+    playNoise(ctx, now, { dur:0.022, vol:0.13*alarmVolume, bpFreq:1500, bpQ:1.4 });
+  } catch(e) {}
+}
+
+// Instructor chime — twee zachte sinustonen, géén radiokarakter
+// (dit is geen veldradiobericht, maar een interne controlroom-comm)
+function playInstructorChime() {
+  playSequence([
+    { freq:880,  dur:0.10, vol:0.13, wave:'sine', gap:0.04,
+      harmonics:[{ratio:2, vol:0.04}] },
+    { freq:1175, dur:0.13, vol:0.11, wave:'sine', gap:0.00,
+      harmonics:[{ratio:2, vol:0.04}] }
+  ]);
+}
+
+// Sys blip — heel korte neutrale tick voor systeemberichten (faseovergang etc)
+function playSysBlip() {
+  playSequence([
+    { freq:1500, dur:0.04, vol:0.06, wave:'sine', gap:0.00 }
+  ]);
+}
+
+// User send — discrete bevestiging dat eigen bericht verzonden is
+function playUserSend() {
+  playSequence([
+    { freq:1320, dur:0.03, vol:0.07, wave:'sine', gap:0.00 }
+  ]);
+}
+
+// Centrale dispatcher: één plek die kiest welke cue bij welk berichttype hoort.
+// Aangeroepen vanuit renderMsg op het moment dat de bubbel verschijnt.
+function playMsgCueIn(type) {
+  switch (type) {
+    case 'ai':         playRadioClickIn();    break;
+    case 'instructor': playInstructorChime(); break;
+    case 'alarm':      playAlarmSound('med'); break; // hergebruik bestaande alarmtoon
+    case 'sys':        playSysBlip();         break;
+    case 'user':       playUserSend();        break;
+  }
+}
+
+// Cue aan het EIND van een AI-bericht: PTT-release. Geeft het bericht een
+// hoorbare bookend ("squelch open · spraak · squelch dicht"). Alleen voor
+// 'ai' — instructor heeft al een chime, alarm/sys hebben geen radiokarakter.
+function playMsgCueOut(type) {
+  if (type === 'ai') playRadioClickOut();
+}
+
 // ── ALARM ACK SYSTEEM ──────────────────────────────────────────────────────
 // alarmsFired: array van { id, tag, msg, type, firedAt (simtime str), firedMs,
 //              ackedAt, ackDelaySec, ackOrder, nudgeFired }
@@ -5174,6 +5423,69 @@ let   msgBusy    = false;
 const CHAR_DELAY = 22;   // ms per karakter
 const MSG_GAP    = 320;  // ms pauze tussen berichten
 
+// ── SLIMME SCROLL-HELPERS ────────────────────────────────────────
+// Doel: nieuwe berichten zijn altijd direct zichtbaar wanneer je
+// onderaan zit. Ben je zelf naar boven gescrold om iets na te lezen?
+// Dan respecteren we dat en tonen we een "nieuw bericht"-pill in
+// plaats van je naar beneden te trekken.
+const NEAR_BOTTOM_PX = 80;   // tolerance: hoe dichtbij telt als 'onderaan'
+let userScrolledUp   = false;
+let pendingNewCount  = 0;
+
+function isNearBottom(feed) {
+  if (!feed) return true;
+  const dist = feed.scrollHeight - feed.scrollTop - feed.clientHeight;
+  return dist <= NEAR_BOTTOM_PX;
+}
+
+// Robuuste scroll-naar-onder. Gebruikt dubbele requestAnimationFrame
+// zodat layout/paint klaar is vóór we scrollen — anders mist hij de
+// laatste paar pixels door de entry-animatie (translateY + glow).
+function scrollFeedToBottom(force) {
+  const feed = document.getElementById('messages');
+  if (!feed) return;
+  if (force) {
+    userScrolledUp = false;
+    hideNewMsgPill();
+  }
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      feed.scrollTop = feed.scrollHeight;
+    });
+  });
+}
+
+function showNewMsgPill(count) {
+  const pill = document.getElementById('new-msg-pill');
+  if (!pill) return;
+  const c = pill.querySelector('.nm-count');
+  const t = pill.querySelector('.nm-text');
+  if (c) c.textContent = count > 99 ? '99+' : String(count);
+  if (t) t.textContent = count === 1 ? 'New message' : 'New messages';
+  pill.classList.add('visible');
+}
+function hideNewMsgPill() {
+  const pill = document.getElementById('new-msg-pill');
+  if (pill) pill.classList.remove('visible');
+  pendingNewCount = 0;
+}
+
+// Eén keer registreren: scroll-listener op #messages
+(function initMsgScrollListener(){
+  document.addEventListener('DOMContentLoaded', () => {
+    const feed = document.getElementById('messages');
+    if (!feed) return;
+    feed.addEventListener('scroll', () => {
+      if (isNearBottom(feed)) {
+        userScrolledUp = false;
+        hideNewMsgPill();
+      } else {
+        userScrolledUp = true;
+      }
+    }, { passive: true });
+  });
+})();
+
 function queueMsg(type, sender, text) {
   msgQueue.push({ type, sender, text });
   if (!msgBusy) drainQueue();
@@ -5207,9 +5519,27 @@ function renderMsg(type, sender, text, onDone) {
     ? `<div class="msg-meta">${sender||'Operator'} · ${getSimTimeStr()}</div>`
     : '';
 
+  // Bepaal vóór het toevoegen of de gebruiker onderaan zit. Zo bepalen
+  // we het scroll-gedrag voor dít bericht.
+  const wasNearBottom = isNearBottom(feed);
+
   d.innerHTML = `${meta}<div class="msg-bub">${pfx}<span class="tw-text"></span><span class="tw-cursor"></span></div>`;
   feed.appendChild(d);
-  feed.scrollTop = feed.scrollHeight;
+
+  // Audio-cue bij verschijnen — radio squelch / chime / blip afhankelijk van type
+  playMsgCueIn(type);
+
+  // User-berichten zijn altijd van de gebruiker zelf → altijd naar onder
+  // scrollen (het is een eigen actie, niet een binnenkomend bericht).
+  if (type === 'user' || wasNearBottom) {
+    scrollFeedToBottom();
+    userScrolledUp = false;
+    hideNewMsgPill();
+  } else {
+    // Gebruiker zit hoger in de feed: niet trekken, wél indicator tonen
+    pendingNewCount++;
+    showNewMsgPill(pendingNewCount);
+  }
 
   const textEl   = d.querySelector('.tw-text');
   const cursor   = d.querySelector('.tw-cursor');
@@ -5218,7 +5548,7 @@ function renderMsg(type, sender, text, onDone) {
   if (type === 'sys' || type === 'user') {
     textEl.textContent = text;
     cursor.classList.add('done');
-    feed.scrollTop = feed.scrollHeight;
+    if (type === 'user' || isNearBottom(feed)) scrollFeedToBottom();
     if (onDone) onDone();
     return;
   }
@@ -5234,12 +5564,15 @@ function renderMsg(type, sender, text, onDone) {
     if (i < text.length) {
       textEl.textContent += text[i];
       i++;
-      feed.scrollTop = feed.scrollHeight;
+      // Alleen meescrollen als de gebruiker (nog steeds) onderaan zit.
+      // Anders: indicator blijft staan, gebruiker leest in alle rust.
+      if (!userScrolledUp) feed.scrollTop = feed.scrollHeight;
       setTimeout(typeNext, speed);
     } else {
-      // Cursor 800ms laten staan, dan wegdoen
+      // Cursor 800ms laten staan, dan wegdoen + squelch-close cue
       setTimeout(() => {
         cursor.classList.add('done');
+        playMsgCueOut(type);
         if (onDone) onDone();
       }, 800);
     }
@@ -6861,6 +7194,15 @@ document.addEventListener('DOMContentLoaded', () => {
     document.body.classList.add('light');
     const btn = document.getElementById('daymode-btn');
     if (btn) { btn.textContent = '🌙'; btn.title = 'Switch to night mode'; }
+  }
+
+  // Restore audio volume — geldt voor alarmen én chat-feed cues
+  const savedVol = localStorage.getItem('oip_audio_volume');
+  if (savedVol !== null) {
+    const v = Math.max(0, Math.min(100, parseInt(savedVol, 10) || 0));
+    const slider = document.getElementById('alarm-vol-slider');
+    if (slider) slider.value = v;
+    setAlarmVolume(v);
   }
 
   // UI language is always English — show intro directly
