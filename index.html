@@ -2332,6 +2332,8 @@ body.light .msg.sys .msg-bub { color: var(--text-dim); }
           oninput="setAlarmVolume(this.value)"
           style="width:52px;height:3px;accent-color:var(--cyan);cursor:pointer;opacity:.7"
           title="Audio volume (alarms · radio · cues)"/>
+        <span id="distant-btn" style="font-size:11px;cursor:pointer;user-select:none;opacity:.9;font-family:var(--mono);font-weight:600;letter-spacing:1px;padding:2px 8px;border:1px solid var(--border-hi);border-radius:3px;color:var(--text);background:var(--bg3)"
+              onclick="toggleDistantAlarms()" title="Toggle distant alarm beeps (other parts of the plant)">DST</span>
       </div>
     </div>
     <div id="alarm-list"></div>
@@ -3531,6 +3533,22 @@ async function startScenario() {
   scenarioLang = execSel?.value || 'en';
 
   getAudioCtx();
+
+  // Distant alarms herstellen indien gebruiker dit eerder aangezet had — mag
+  // pas hier omdat AudioContext een user-gesture nodig heeft (start-knop).
+  try {
+    if (localStorage.getItem('oip_audio_distant') === '1') {
+      distantEnabled = true;
+      startDistantAlarms();
+      const btn = document.getElementById('distant-btn');
+      if (btn) {
+        btn.style.color = 'var(--cyan)';
+        btn.style.borderColor = 'var(--cyan)';
+        btn.style.background = 'var(--cyan-dim)';
+        btn.style.opacity = '1';
+      }
+    }
+  } catch(e) {}
 
   // Verberg het intro-paneel meteen — de operator weet dat het scenario gaat starten
   document.getElementById('intro').classList.remove('visible');
@@ -5223,70 +5241,462 @@ function playNoise(ctx, startTime, opts = {}) {
   src.stop(startTime + dur + 0.02);
 }
 
-// Radio squelch open — wanneer een AI-radiobericht binnenkomt
+// ── PINK NOISE BUFFER (Voss-McCartney approximatie) ──────────────────────
+// Pink noise klinkt veel natuurlijker dan witte ruis: lagere frequenties zijn
+// dominanter, wat past bij wat we van een radio-luidspreker of HVAC verwachten.
+function makePinkNoiseBuffer(ctx, durSec, channels = 1) {
+  const sampleCount = Math.max(1, Math.floor(ctx.sampleRate * durSec));
+  const buf = ctx.createBuffer(channels, sampleCount, ctx.sampleRate);
+  for (let ch = 0; ch < channels; ch++) {
+    const data = buf.getChannelData(ch);
+    let b0=0, b1=0, b2=0;
+    for (let i = 0; i < sampleCount; i++) {
+      const w = Math.random() * 2 - 1;
+      b0 = 0.99765 * b0 + w * 0.0990460;
+      b1 = 0.96300 * b1 + w * 0.2965164;
+      b2 = 0.57000 * b2 + w * 1.0526913;
+      data[i] = (b0 + b1 + b2) * 0.45;
+    }
+  }
+  return buf;
+}
+
+// ── RADIO CARRIER HISS ────────────────────────────────────────────────────
+// Continue ruis tussen click-in en click-out. Dit is dé immersieboost: een
+// echte radio is nooit stil — je hoort altijd de "open lijn" zodra iemand
+// de PTT indrukt. Profielen verschillen per zender: veld-portofoon klinkt
+// smaller/ruwer dan een interne CCR-radio.
+const RADIO_PROFILES = {
+  field:   { center: 1300, q: 0.45, vol: 0.040 },  // smal, ruwer — portofoon
+  ccr:     { center: 1700, q: 0.30, vol: 0.030 },  // breder, gladder — intern
+  generic: { center: 1500, q: 0.40, vol: 0.035 },
+};
+
+let activeCarrier = null;  // { src, env } — slechts één tegelijk actief
+
+function startRadioCarrier(profile = 'field') {
+  if (alarmMuted || alarmVolume === 0) return;
+  if (activeCarrier) stopRadioCarrier();
+  const p = RADIO_PROFILES[profile] || RADIO_PROFILES.field;
+
+  try {
+    const ctx = getAudioCtx();
+    const buf = makePinkNoiseBuffer(ctx, 3.0, 1);
+
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = p.center;
+    bp.Q.value = p.q;
+
+    // Subtiele LFO op gain — geeft de ruis micro-leven, geen statisch effect
+    const lfo = ctx.createOscillator();
+    lfo.type = 'sine';
+    lfo.frequency.value = 0.7 + Math.random() * 0.5;
+    const lfoGain = ctx.createGain();
+    lfoGain.gain.value = 0.06;  // ±6% modulatie
+
+    const env = ctx.createGain();
+    env.gain.value = 0;
+
+    src.connect(bp).connect(env).connect(ctx.destination);
+    lfo.connect(lfoGain).connect(env.gain);  // LFO moduleert env-gain
+
+    src.start();
+    lfo.start();
+
+    // Snelle fade-in (~50ms) zodat hij overlapt met de click-in tail
+    const now = ctx.currentTime;
+    env.gain.linearRampToValueAtTime(p.vol * alarmVolume, now + 0.05);
+
+    activeCarrier = { src, env, lfo };
+  } catch(e) { console.warn('[OIP audio] carrier start failed:', e); }
+}
+
+function stopRadioCarrier() {
+  if (!activeCarrier) return;
+  const c = activeCarrier;
+  activeCarrier = null;
+  try {
+    const ctx = audioCtx;
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    c.env.gain.cancelScheduledValues(now);
+    c.env.gain.setValueAtTime(c.env.gain.value, now);
+    c.env.gain.linearRampToValueAtTime(0, now + 0.07);
+    setTimeout(() => {
+      try { c.src.stop(); c.lfo.stop(); } catch(e) {}
+    }, 110);
+  } catch(e) {}
+}
+
+// ── RADIO CLICK VARIANTEN ─────────────────────────────────────────────────
+// Drie subtiel verschillende klikken zodat repetitie niet hoorbaar wordt.
+// Random gekozen per bericht.
+const RADIO_IN_VARIANTS = [
+  // Standaard PTT-druk
+  { d1:0.060, v1:0.55, b1:1400, q1:0.7,  d2:0.030, v2:0.40, b2:3200, q2:1.4 },
+  // Snappere, hardere variant
+  { d1:0.050, v1:0.60, b1:1200, q1:0.85, d2:0.025, v2:0.45, b2:2800, q2:1.6 },
+  // Langere, dommere variant (oudere portofoon)
+  { d1:0.075, v1:0.50, b1:1600, q1:0.55, d2:0.020, v2:0.35, b2:3600, q2:1.2 },
+];
+const RADIO_OUT_VARIANTS = [
+  { d1:0.045, v1:0.40, b1:1100, q1:0.8,  d2:0.018, v2:0.30, b2:2400, q2:1.5 },
+  { d1:0.038, v1:0.45, b1:1000, q1:0.9,  d2:0.022, v2:0.32, b2:2200, q2:1.4 },
+  { d1:0.052, v1:0.35, b1:1300, q1:0.7,  d2:0.015, v2:0.28, b2:2600, q2:1.6 },
+];
+
 function playRadioClickIn() {
   if (alarmMuted || alarmVolume === 0) return;
   try {
     const ctx = getAudioCtx();
     const now = ctx.currentTime + 0.005;
-    // Twee ruisburst-lagen geven die typische "krrrr·tik" van een PTT-druk
-    playNoise(ctx, now,        { dur:0.030, vol:0.22*alarmVolume, bpFreq:2400, bpQ:1.0 });
-    playNoise(ctx, now + 0.025,{ dur:0.020, vol:0.14*alarmVolume, bpFreq:1600, bpQ:1.5 });
-  } catch(e) {}
+    const v = RADIO_IN_VARIANTS[Math.floor(Math.random() * RADIO_IN_VARIANTS.length)];
+    playNoise(ctx, now,         { dur:v.d1, vol:v.v1*alarmVolume, bpFreq:v.b1, bpQ:v.q1 });
+    playNoise(ctx, now + 0.012, { dur:v.d2, vol:v.v2*alarmVolume, bpFreq:v.b2, bpQ:v.q2 });
+  } catch(e) { console.warn('[OIP audio] radio-in failed:', e); }
 }
 
-// Radio squelch close — wanneer de zin klaar is, PTT loslaten
 function playRadioClickOut() {
   if (alarmMuted || alarmVolume === 0) return;
   try {
     const ctx = getAudioCtx();
     const now = ctx.currentTime + 0.005;
-    playNoise(ctx, now, { dur:0.022, vol:0.13*alarmVolume, bpFreq:1500, bpQ:1.4 });
-  } catch(e) {}
+    const v = RADIO_OUT_VARIANTS[Math.floor(Math.random() * RADIO_OUT_VARIANTS.length)];
+    playNoise(ctx, now,         { dur:v.d1, vol:v.v1*alarmVolume, bpFreq:v.b1, bpQ:v.q1 });
+    playNoise(ctx, now + 0.020, { dur:v.d2, vol:v.v2*alarmVolume, bpFreq:v.b2, bpQ:v.q2 });
+  } catch(e) { console.warn('[OIP audio] radio-out failed:', e); }
 }
 
-// Instructor chime — twee zachte sinustonen, géén radiokarakter
-// (dit is geen veldradiobericht, maar een interne controlroom-comm)
+// ── ROL-DETECTIE OP BASIS VAN AFZENDER ────────────────────────────────────
+// Probeert sender-string te matchen op CCR vs veld. Defaultet naar field.
+// Kan in de toekomst uitgebreid worden via scenario JSON metadata.
+function detectRadioProfile(sender) {
+  if (!sender) return 'field';
+  const s = String(sender).toLowerCase();
+  if (/(ccr|control\s*room|controle\s*kamer|controlekamer|wachtdienst|board\s*operator|cro\b|crro|paneel)/.test(s)) {
+    return 'ccr';
+  }
+  return 'field';
+}
+
+// ── INSTRUCTOR CHIME ──────────────────────────────────────────────────────
 function playInstructorChime() {
   playSequence([
-    { freq:880,  dur:0.10, vol:0.13, wave:'sine', gap:0.04,
-      harmonics:[{ratio:2, vol:0.04}] },
-    { freq:1175, dur:0.13, vol:0.11, wave:'sine', gap:0.00,
-      harmonics:[{ratio:2, vol:0.04}] }
+    { freq:880,  dur:0.14, vol:0.32, wave:'sine', gap:0.05,
+      harmonics:[{ratio:2, vol:0.10},{ratio:3, vol:0.04}] },
+    { freq:1175, dur:0.20, vol:0.28, wave:'sine', gap:0.00,
+      harmonics:[{ratio:2, vol:0.10}] }
   ]);
 }
 
-// Sys blip — heel korte neutrale tick voor systeemberichten (faseovergang etc)
 function playSysBlip() {
   playSequence([
-    { freq:1500, dur:0.04, vol:0.06, wave:'sine', gap:0.00 }
+    { freq:1500, dur:0.06, vol:0.18, wave:'sine', gap:0.00 }
   ]);
 }
 
-// User send — discrete bevestiging dat eigen bericht verzonden is
 function playUserSend() {
   playSequence([
-    { freq:1320, dur:0.03, vol:0.07, wave:'sine', gap:0.00 }
+    { freq:1320, dur:0.04, vol:0.16, wave:'sine', gap:0.00 }
   ]);
 }
 
-// Centrale dispatcher: één plek die kiest welke cue bij welk berichttype hoort.
-// Aangeroepen vanuit renderMsg op het moment dat de bubbel verschijnt.
-function playMsgCueIn(type) {
-  switch (type) {
-    case 'ai':         playRadioClickIn();    break;
-    case 'instructor': playInstructorChime(); break;
-    case 'alarm':      playAlarmSound('med'); break; // hergebruik bestaande alarmtoon
-    case 'sys':        playSysBlip();         break;
-    case 'user':       playUserSend();        break;
+// ── DISTANT ALARM BEEPS ───────────────────────────────────────────────────
+// Random sporadische alarm-achtige tonen die ver weg klinken — door wanden,
+// vanaf andere installaties. Geeft narratieve diepte: er gebeurt méér in
+// de plant dan alleen jouw console. NIET continu (zou opdringerig worden);
+// wel onvoorspelbaar genoeg om de wereld levend te laten voelen.
+//
+// Acoustic distance trucs:
+//   - Heavy low-pass (cutoff 600-1100 Hz) → hoge frequenties verdwijnen
+//     het eerst over afstand, dus dit voelt direct "ver"
+//   - Slap delay met feedback → korte echo-tail zoals door gangen
+//   - Soft attack → geen scherpe transient (transienten verraden nabijheid)
+//   - Random pan + random distance scaling → bronnen verspreid in de plant
+
+const DISTANT_VARIANTS = [
+  // Single lage toon — "een kleine alarm op een tank twee verdiepingen lager"
+  { type:'single_low',   freq:480, dur:0.32, pulses:1, gap:0,    cutoff:680,  vol:0.20 },
+  // Dubbele med — "process alarm gangbaar elders"
+  { type:'double_med',   freq:620, dur:0.18, pulses:2, gap:0.10, cutoff:820,  vol:0.18 },
+  // Triple warn — "iets escaleert verderop"
+  { type:'triple_warn',  freq:760, dur:0.10, pulses:3, gap:0.08, cutoff:920,  vol:0.16 },
+  // Lange ping — "ver verwijderd, doffe toon"
+  { type:'long_tone',    freq:380, dur:0.55, pulses:1, gap:0,    cutoff:600,  vol:0.22 },
+  // Rapid blips — "snelle pulserende alarm"
+  { type:'rapid_blips',  freq:880, dur:0.05, pulses:4, gap:0.06, cutoff:1050, vol:0.14 },
+  // Warble — frequentie-gemoduleerd, klassieke industriële horn
+  { type:'warble',       freq:540, dur:0.40, pulses:1, gap:0,    cutoff:760,  vol:0.18, modulate:true },
+];
+
+function playDistantAlarm() {
+  if (alarmMuted || alarmVolume === 0) return;
+  try {
+    const ctx = getAudioCtx();
+    const v = DISTANT_VARIANTS[Math.floor(Math.random() * DISTANT_VARIANTS.length)];
+    const now = ctx.currentTime + 0.005;
+
+    // Random afstand-factor 0.55 - 1.0 — afwisseling tussen "vrij dichtbij"
+    // en "echt ergens ver weg"
+    const distance     = 0.55 + Math.random() * 0.45;
+    const effectiveVol = v.vol * alarmVolume * distance;
+
+    // Random pan ±0.5 — bronnen verspreid links/rechts in de installatie
+    const pan = (Math.random() * 2 - 1) * 0.5;
+
+    // Heavy lowpass — dé "distant" trigger voor het oor
+    const lpf = ctx.createBiquadFilter();
+    lpf.type = 'lowpass';
+    lpf.frequency.value = v.cutoff;
+    lpf.Q.value = 0.7;
+
+    // Lichte highpass — anti-rumble
+    const hpf = ctx.createBiquadFilter();
+    hpf.type = 'highpass';
+    hpf.frequency.value = 180;
+    hpf.Q.value = 0.5;
+
+    // Stereo pan
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = pan;
+
+    // Slap-delay met lage feedback — emuleert reflectie door gangen.
+    // Geen lange reverb-tail (die past niet bij industriële akoestiek).
+    const delay = ctx.createDelay(0.5);
+    delay.delayTime.value = 0.055 + Math.random() * 0.04;  // 55-95ms slap
+    const fb = ctx.createGain();
+    fb.gain.value = 0.28;
+    const wet = ctx.createGain();
+    wet.gain.value = 0.32;
+
+    // Connectie: hpf → lpf → panner ─┬─→ destination (dry)
+    //                                └─→ delay ↺ fb → wet → destination
+    hpf.connect(lpf).connect(panner);
+    panner.connect(ctx.destination);
+    panner.connect(delay);
+    delay.connect(fb).connect(delay);
+    delay.connect(wet).connect(ctx.destination);
+
+    // Genereer de pulses van de variant
+    let t = now;
+    for (let i = 0; i < v.pulses; i++) {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+
+      if (v.modulate) {
+        // Warble: frequentie heen-en-weer voor klassiek industrial-horn-effect
+        osc.frequency.setValueAtTime(v.freq, t);
+        osc.frequency.linearRampToValueAtTime(v.freq + 90, t + v.dur * 0.5);
+        osc.frequency.linearRampToValueAtTime(v.freq,      t + v.dur);
+      } else {
+        osc.frequency.value = v.freq;
+      }
+
+      const env = ctx.createGain();
+      const attack  = 0.030;                       // soft attack = "ver weg"
+      const release = Math.min(0.06, v.dur * 0.35);
+      env.gain.setValueAtTime(0, t);
+      env.gain.linearRampToValueAtTime(effectiveVol, t + attack);
+      env.gain.setValueAtTime(effectiveVol, t + v.dur - release);
+      env.gain.linearRampToValueAtTime(0, t + v.dur);
+
+      osc.connect(env).connect(hpf);
+      osc.start(t);
+      osc.stop(t + v.dur + 0.05);
+
+      t += v.dur + v.gap;
+    }
+
+    console.log(`[OIP distant] ${v.type} pan=${pan.toFixed(2)} dist=${distance.toFixed(2)}`);
+  } catch(e) { console.warn('[OIP audio] distant alarm failed:', e); }
+}
+
+// ── DISTANT ALARM SCHEDULER ───────────────────────────────────────────────
+// Plant random distant beeps op onvoorspelbare intervallen. Geen vaste
+// frequentie — soms 30s tussen beeps, soms 75s, soms een cluster.
+let distantTimer    = null;
+let distantEnabled  = false;
+
+function scheduleNextDistantAlarm() {
+  // Basis interval 30-75s. Bias door sqrt te nemen → vaker rond 45-55s.
+  const minMs = 30000;
+  const maxMs = 75000;
+  const interval = minMs + Math.sqrt(Math.random()) * (maxMs - minMs);
+
+  distantTimer = setTimeout(() => {
+    if (!distantEnabled) return;
+    playDistantAlarm();
+
+    // 20% kans op een cluster: tweede beep binnen 3-8s, alsof er ergens
+    // een alarm-cascade speelt
+    if (Math.random() < 0.20) {
+      const clusterDelay = 3000 + Math.random() * 5000;
+      setTimeout(() => {
+        if (distantEnabled) playDistantAlarm();
+      }, clusterDelay);
+    }
+    scheduleNextDistantAlarm();
+  }, interval);
+}
+
+function startDistantAlarms() {
+  if (distantTimer) return;
+  // Eerste beep tussen 15-30s na inschakeling — niet meteen bij start,
+  // dat zou geforceerd voelen
+  const firstDelay = 15000 + Math.random() * 15000;
+  distantTimer = setTimeout(() => {
+    if (!distantEnabled) return;
+    playDistantAlarm();
+    scheduleNextDistantAlarm();
+  }, firstDelay);
+}
+
+function stopDistantAlarms() {
+  if (distantTimer) {
+    clearTimeout(distantTimer);
+    distantTimer = null;
   }
 }
 
-// Cue aan het EIND van een AI-bericht: PTT-release. Geeft het bericht een
-// hoorbare bookend ("squelch open · spraak · squelch dicht"). Alleen voor
-// 'ai' — instructor heeft al een chime, alarm/sys hebben geen radiokarakter.
+function toggleDistantAlarms() {
+  distantEnabled = !distantEnabled;
+  const btn = document.getElementById('distant-btn');
+  if (distantEnabled) {
+    startDistantAlarms();
+    if (btn) {
+      btn.style.color = 'var(--cyan)';
+      btn.style.borderColor = 'var(--cyan)';
+      btn.style.background = 'var(--cyan-dim)';
+      btn.style.opacity = '1';
+    }
+    // Eén directe beep zodat gebruiker meteen hoort dat het aan staat
+    setTimeout(() => { if (distantEnabled) playDistantAlarm(); }, 500);
+  } else {
+    stopDistantAlarms();
+    if (btn) {
+      btn.style.color = 'var(--text)';
+      btn.style.borderColor = 'var(--border-hi)';
+      btn.style.background = 'var(--bg3)';
+      btn.style.opacity = '0.9';
+    }
+  }
+  try { localStorage.setItem('oip_audio_distant', distantEnabled ? '1' : '0'); } catch(e) {}
+}
+
+// ── DISPATCHER: bericht-cues ──────────────────────────────────────────────
+// Doel: bij meerdere opeenvolgende AI-berichten (veldoperator, contractor,
+// CCR door elkaar) hoort de carrier ÉÉN keer te starten en pas bij het
+// laatste bericht te stoppen. Dat voorkomt het "ruisvlaag-bij-elke-regel"
+// effect en geeft een rustigere, continuïere radiosfeer.
+//
+// Mechanisme:
+//   - Op cue-in('ai'): als carrier al loopt → continuation (geen click-in,
+//     geen herstart). Anders: normale click-in + carrier-start.
+//   - Op cue-out('ai'): plan een vertraagde stop (grace ~600 ms). Komt er
+//     binnen die tijd een nieuwe ai-cue-in, dan annuleren we de stop en
+//     blijft carrier doorlopen.
+//   - Cue-in voor non-ai (instructor/sys/alarm/user) breekt de sequentie
+//     direct af: pending stop annuleren, carrier nu stoppen.
+let pendingCarrierStop = null;
+const CARRIER_STOP_GRACE_MS = 600;  // wachttijd voor eventuele volgende AI
+
+function playMsgCueIn(type, sender) {
+  console.log(`[OIP cue·in] type=${type} sender=${sender||''} vol=${alarmVolume} muted=${alarmMuted}`);
+
+  // Non-AI bericht onderbreekt elke lopende AI-sequentie. Carrier moet
+  // direct dicht voordat het andere geluid (chime/alarm/blip) begint.
+  if (type !== 'ai') {
+    if (pendingCarrierStop) {
+      clearTimeout(pendingCarrierStop);
+      pendingCarrierStop = null;
+    }
+    if (activeCarrier) stopRadioCarrier();
+  }
+
+  switch (type) {
+    case 'ai':
+      // Als er een stop in de wacht stond: annuleren — sequentie continueert
+      if (pendingCarrierStop) {
+        clearTimeout(pendingCarrierStop);
+        pendingCarrierStop = null;
+      }
+      if (activeCarrier) {
+        // Continuation: nieuwe regel binnen lopende AI-sequentie.
+        // Geen click-in, geen herstart. Carrier blijft op zelfde niveau.
+        console.log('[OIP cue·in] AI continuation — carrier blijft, geen click-in');
+      } else {
+        // Eerste regel in de sequentie: normale PTT-druk + carrier start
+        playRadioClickIn();
+        setTimeout(() => {
+          const profile = detectRadioProfile(sender);
+          startRadioCarrier(profile);
+        }, 35);
+      }
+      break;
+    case 'instructor':
+      playInstructorChime();
+      break;
+    case 'alarm':
+      playAlarmSound('med');
+      break;
+    case 'sys':
+      playSysBlip();
+      break;
+    case 'user':
+      playUserSend();
+      break;
+  }
+}
+
+// Click-uit + carrier-stop voor AI-berichten — maar met grace period zodat
+// een volgend AI-bericht binnen 600 ms de stop annuleert.
 function playMsgCueOut(type) {
-  if (type === 'ai') playRadioClickOut();
+  if (type !== 'ai') return;
+  if (pendingCarrierStop) clearTimeout(pendingCarrierStop);
+  pendingCarrierStop = setTimeout(() => {
+    pendingCarrierStop = null;
+    if (activeCarrier) {
+      console.log('[OIP cue·out] AI sequentie afgesloten — carrier stop + click-out');
+      stopRadioCarrier();
+      setTimeout(() => playRadioClickOut(), 30);
+    }
+  }, CARRIER_STOP_GRACE_MS);
+}
+
+// Diagnose: speel alle cues kort na elkaar af zodat je per type kunt checken
+// of audio door je systeem komt. Aangeroepen via ▶-knopje naast volumeslider.
+function testAudioCues() {
+  console.log('[OIP audio test] starting — vol=' + alarmVolume + ' muted=' + alarmMuted);
+  if (alarmMuted || alarmVolume === 0) {
+    console.warn('[OIP audio test] AUDIO IS MUTED. Click 🔔 of zet de slider hoger.');
+    alert('Audio staat op mute. Zet het volume hoger of klik op 🔔.');
+    return;
+  }
+  // Forceer context unlock (mocht gebruiker nog niets aangeklikt hebben)
+  getAudioCtx();
+  const seq = [
+    // Field-radio: click in → carrier (1.5s) → click out
+    { delay:    0, fn: () => { console.log('· FIELD radio click in + carrier'); playRadioClickIn(); setTimeout(() => startRadioCarrier('field'), 35); } },
+    { delay: 1500, fn: () => { console.log('· FIELD carrier stop + click out'); stopRadioCarrier(); setTimeout(() => playRadioClickOut(), 30); } },
+    // CCR-radio: cleaner profiel
+    { delay: 2400, fn: () => { console.log('· CCR radio click in + carrier'); playRadioClickIn(); setTimeout(() => startRadioCarrier('ccr'), 35); } },
+    { delay: 3800, fn: () => { console.log('· CCR carrier stop + click out'); stopRadioCarrier(); setTimeout(() => playRadioClickOut(), 30); } },
+    // Andere cue-types
+    { delay: 4700, fn: () => { console.log('· instructor chime'); playInstructorChime(); } },
+    { delay: 5400, fn: () => { console.log('· sys blip'); playSysBlip(); } },
+    { delay: 5800, fn: () => { console.log('· user send'); playUserSend(); } },
+    { delay: 6300, fn: () => { console.log('· alarm med (own console)'); playAlarmSound('med'); } },
+    // Distant alarms — drie verschillende karakters voor demo
+    { delay: 7400, fn: () => { console.log('· distant beep 1'); playDistantAlarm(); } },
+    { delay: 8400, fn: () => { console.log('· distant beep 2'); playDistantAlarm(); } },
+    { delay: 9400, fn: () => { console.log('· distant beep 3'); playDistantAlarm(); } },
+  ];
+  seq.forEach(s => setTimeout(s.fn, s.delay));
 }
 
 // ── ALARM ACK SYSTEEM ──────────────────────────────────────────────────────
@@ -5526,8 +5936,9 @@ function renderMsg(type, sender, text, onDone) {
   d.innerHTML = `${meta}<div class="msg-bub">${pfx}<span class="tw-text"></span><span class="tw-cursor"></span></div>`;
   feed.appendChild(d);
 
-  // Audio-cue bij verschijnen — radio squelch / chime / blip afhankelijk van type
-  playMsgCueIn(type);
+  // Audio-cue bij verschijnen — radio squelch / chime / blip afhankelijk van type.
+  // Sender wordt meegegeven zodat AI-radio het juiste profiel kiest (field/ccr).
+  playMsgCueIn(type, sender);
 
   // User-berichten zijn altijd van de gebruiker zelf → altijd naar onder
   // scrollen (het is een eigen actie, niet een binnenkomend bericht).
@@ -5569,10 +5980,13 @@ function renderMsg(type, sender, text, onDone) {
       if (!userScrolledUp) feed.scrollTop = feed.scrollHeight;
       setTimeout(typeNext, speed);
     } else {
-      // Cursor 800ms laten staan, dan wegdoen + squelch-close cue
+      // Audio: snel afsluiten (carrier stop + click-out) — ~200ms na laatste
+      // karakter. Dat voelt als een echte PTT-release: spraak stopt, korte
+      // tail, dan klik. Apart van de visuele cursor die nog 800ms blijft.
+      setTimeout(() => playMsgCueOut(type), 200);
+      // Visueel + queue: cursor blijft nog kort staan voor leesrust
       setTimeout(() => {
         cursor.classList.add('done');
-        playMsgCueOut(type);
         if (onDone) onDone();
       }, 800);
     }
