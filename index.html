@@ -3854,6 +3854,10 @@ class InlineVoiceInput {
     this.onState = opts.onStateChange;
     this.onTranscript = opts.onTranscript;
     this.onError = opts.onError;
+    // Skip de prompt-echo-detectie voor use-cases waar de gebruiker bewust een zin
+    // voorleest die óók in de prompt voorkomt (bv. radio-check). Anders wordt de
+    // legitieme transcriptie als echo gezien en niet doorgegeven.
+    this.skipPromptEchoCheck = !!opts.skipPromptEchoCheck;
     this.state = 'idle';   // idle | recording | processing
     this.stream = null;
     this.mediaRecorder = null;
@@ -3992,7 +3996,8 @@ class InlineVoiceInput {
       // Wanneer Whisper de prompt echoot, komen die markers mee terug — we strippen ze
       // zodat de echo-detectie eronder de inhoud kan vergelijken met de prompt.
       const cleaned = InlineVoiceInput._stripPromptWrappers(trimmed);
-      const isEcho = InlineVoiceInput._isPromptEcho(cleaned, this.prompt);
+      const isEcho = !this.skipPromptEchoCheck
+        && InlineVoiceInput._isPromptEcho(cleaned, this.prompt);
       if (cleaned && !InlineVoiceInput._isHallucination(cleaned) && !isEcho) {
         this.onTranscript?.(cleaned);
       } else if (trimmed) {
@@ -4561,6 +4566,9 @@ function runRadioCheck() {
       language: effL,
       // Geef Whisper de testzin mee als hint — vergelijkbaar met scenariocontext
       prompt: T.sentence + ' ' + (VOICE_CONFIG.basePrompt || ''),
+      // Echo-detectie uit: de gebruiker leest hier bewust een zin voor die óók in
+      // de prompt staat. De radio-check vergelijkt zelf met computeWordOverlap.
+      skipPromptEchoCheck: true,
       audioLevelCallback: lvl => {
         if (!meter) return;
         const bars = meter.children;
