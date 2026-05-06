@@ -3988,10 +3988,15 @@ class InlineVoiceInput {
       const trimmed = (text || '').trim();
       // Whisper-hallucinaties bij stilte filteren — typische uitkomsten bij geen of zeer zachte audio:
       // "nl", "en", "Bedankt voor het kijken.", "Thanks for watching.", "Ondertiteld door...", etc.
-      if (trimmed && !InlineVoiceInput._isHallucination(trimmed)) {
-        this.onTranscript?.(trimmed);
+      // Strip server-wrapper (Netlify proxy zet `context: ###...###` om de prompt heen).
+      // Wanneer Whisper de prompt echoot, komen die markers mee terug — we strippen ze
+      // zodat de echo-detectie eronder de inhoud kan vergelijken met de prompt.
+      const cleaned = InlineVoiceInput._stripPromptWrappers(trimmed);
+      const isEcho = InlineVoiceInput._isPromptEcho(cleaned, this.prompt);
+      if (cleaned && !InlineVoiceInput._isHallucination(cleaned) && !isEcho) {
+        this.onTranscript?.(cleaned);
       } else if (trimmed) {
-        console.log('[OIP voice] Hallucination/silence-artefact verworpen:', trimmed);
+        console.log('[OIP voice] Hallucination/prompt-echo verworpen:', trimmed.slice(0, 120));
       } else {
         console.log('[OIP voice] Empty transcript');
       }
@@ -4027,6 +4032,66 @@ class InlineVoiceInput {
       /^bye\.?$/,
     ];
     return patterns.some(rx => rx.test(t));
+  }
+
+  // Server-side wrappers die soms terugkomen in een Whisper prompt-echo.
+  // De Netlify-proxy zet `context: ###\n[prompt]\n###` om de prompt heen — als Whisper
+  // dat echoot, willen we die markers eerst weghalen zodat de echo-detectie zuiver werkt.
+  static _stripPromptWrappers(text) {
+    if (!text) return '';
+    let t = text;
+    // Verwijder regels die enkel uit ### bestaan (delimiters van de proxy-wrapper)
+    t = t.replace(/^\s*#{2,}\s*$/gm, '');
+    // Verwijder een leidende `context:` of `context: ###` regel
+    t = t.replace(/^\s*context\s*:\s*#*\s*$/gim, '');
+    t = t.replace(/^\s*context\s*:\s*/i, '');
+    // Verwijder verspreide ### markers
+    t = t.replace(/#{3,}/g, '');
+    return t.trim();
+  }
+
+  // Whisper prompt-echo: bij stilte of zeer zachte audio (i.c.m. temperature=0) geeft
+  // het model soms de meegestuurde prompt terug als transcriptie. We vergelijken
+  // de schoongemaakte tekst met de verstuurde prompt; als de overlap groot is, verwerpen.
+  static _isPromptEcho(text, prompt) {
+    if (!text || !prompt) return false;
+    if (text.length < 12) return false; // korte uitspraken nooit als echo zien
+
+    const norm = s => s.toLowerCase()
+      .replace(/[#\u200B-\u200D\uFEFF]/g, '')        // markers + zero-width
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')              // leestekens weg
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const nText = norm(text);
+    const nPrompt = norm(prompt);
+    if (!nText || !nPrompt) return false;
+
+    // Sterke aanwijzing 1: ruwe tekst bevat een lange substring die letterlijk in de prompt staat
+    // (≥40 chars samenhangend uit de prompt = vrijwel zeker echo, want spontane spraak doet dat niet).
+    if (nPrompt.length >= 40) {
+      const promptChunks = nPrompt.match(/.{40,}/g) || [nPrompt];
+      for (const chunk of promptChunks) {
+        if (nText.includes(chunk.slice(0, 40))) return true;
+      }
+    }
+
+    // Sterke aanwijzing 2: hoge token-overlap met de prompt
+    const tokens = s => new Set(s.split(' ').filter(w => w.length >= 3));
+    const tT = tokens(nText);
+    const tP = tokens(nPrompt);
+    if (tT.size === 0) return false;
+    let shared = 0;
+    for (const w of tT) if (tP.has(w)) shared++;
+    const overlap = shared / tT.size;
+    // ≥70% van de woorden uit de transcriptie komt terug uit de prompt → echo
+    if (overlap >= 0.7 && tT.size >= 4) return true;
+
+    // Sterke aanwijzing 3: structuurmarkers die de prompt kenmerken
+    // ("Roles:" / "Terms:" / "Operator:" gevolgd door komma-lijst — typisch buildVoicePrompt-formaat)
+    if (/\b(roles|terms|operator)\s*:\s*\S+(\s*,\s*\S+){2,}/i.test(text)) return true;
+
+    return false;
   }
 
   async _transcribe(blob) {
